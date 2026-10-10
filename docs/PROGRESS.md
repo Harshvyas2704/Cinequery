@@ -6,7 +6,7 @@ The plan is in `PLAN.md`; the reasons behind choices are in `DECISIONS.md`.
 ## Phases
 
 - [x] Phase 0: Project setup
-- [ ] Phase 1: Data preparation (DuckDB)
+- [x] Phase 1: Data preparation (DuckDB)
 - [ ] Phase 2: Ingestion into Postgres
 - [ ] Phase 3: Baseline search without AI
 - [ ] Phase 4: LLM provider and embeddings pipeline
@@ -93,3 +93,83 @@ Local versions: Node 24.21.0, pnpm 12.8.1, PostgreSQL 18.6, pgvector 0.8.7, Redi
 - Request IDs, rate limits, graceful shutdown and log redaction: Phase 8.
 - Web tests: none yet. The page is one fetch; tests come with the search page in Phase 3.
 - Integration tests in CI: Phase 11, with service containers.
+
+## Phase 1: Data preparation (DuckDB)
+
+Status on 2026-10-10: done.
+
+### Built
+
+- `scripts/download-data.sh`: downloads the two raw datasets into `data/raw`
+  and skips what is already there.
+- `scripts/prepare-data.sql`: inspects the raw data, filters the catalog, joins
+  the Tag Genome and writes `data/clean/movies.parquet` and
+  `data/clean/movie_tags.parquet`. Settings are at the top of the file. It ends
+  with checks that stop the script if the output is wrong.
+- `packages/shared/src/curated-tags.json`: the 47 curated tags and the genome
+  tags behind each (D-034).
+
+### How to run
+
+```bash
+bash scripts/download-data.sh          # about 790 MB, once
+duckdb < scripts/prepare-data.sql      # about 2 seconds
+```
+
+### Decided
+
+- 50 votes minimum (D-031); 20 for seven Indian languages (D-032).
+- Tags stored: top 25 per movie plus every curated tag (D-033).
+- Curated tag list approved (D-034).
+
+### Measured
+
+| What                                         | Number                          |
+| -------------------------------------------- | ------------------------------- |
+| Raw rows                                     | 1,142,342 (766 duplicate ids)   |
+| Left after status, adult and overview filters| 803,324                         |
+| Catalog                                      | 28,725 movies                   |
+| Release years                                | 1874 to 2023 (newest 2023-09-29)|
+| Movies with a poster                         | 28,708 (99.94%)                 |
+| Movies with no keywords                      | 4,320 (15%)                     |
+| Movies with no tagline                       | 10,553 (37%)                    |
+| Movies with no runtime / year / genres       | 57 / 2 / 24                     |
+| Movies with genome tags                      | 12,085 (42.1%)                  |
+| `movie_tags` rows                            | 332,167 (27.5 per tagged movie) |
+| `movies.parquet` / `movie_tags.parquet`      | 5.6 MB / 1.0 MB                 |
+
+Catalog by language: en 18,262; fr 2,379; it 1,375; ja 1,063; es 981; hi 826;
+de 527; ko 407; zh 329; ru 297; cn 252; pt 246; ta 230; ml 171; tr 164;
+te 92; bn 31; kn 12; mr 4.
+
+Share of movies with genome tags, by release decade:
+
+| Decade | Movies | With tags |
+| ------ | ------ | --------- |
+| 1980s  | 2,030  | 66%       |
+| 1990s  | 2,935  | 71%       |
+| 2000s  | 5,673  | 58%       |
+| 2010s  | 10,844 | 29%       |
+| 2020s  | 3,107  | 0%        |
+
+Running the script twice from scratch gave files with the same SHA-256.
+
+Spot checks: Shutter Island, Inception and 3 Idiots are in the catalog. Shutter
+Island has "twist ending" at 0.99 and Inception at 0.94. The top "twist ending"
+films from 2005 on are The Invisible Guest, Gone Girl, The Prestige, Shutter
+Island.
+
+### Things to know for later phases
+
+- **Recent films have no tags.** The genome stops in 2019, so no film from the
+  2020s and only 29% from the 2010s has tags. A request like "twist ending,
+  not too old" can only boost tagged films. Vector search (Phase 5) covers part
+  of this; Phase 9 should measure it, and it is the case for Phase 10.
+- **Indian films have almost no tags**: 85 of the 1,366 films in the seven
+  languages.
+- **The catalog stops in September 2023.** The TMDB file is a snapshot.
+- DuckDB 1.5.6 was installed with `/opt/homebrew/bin/brew install duckdb`.
+
+### Deferred
+
+- Nothing from this phase.

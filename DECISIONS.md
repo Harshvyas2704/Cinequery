@@ -145,13 +145,14 @@ flowchart TD
 - **Decision:** Source: `ada-datadruids/full_tmdb_movies_dataset` on Hugging Face (about 1.14 million rows). Keep only movies that are released, not adult, have an overview and meet a minimum vote count.
 - **Alternatives:** `AiresPucrs/tmdb-5000-movies` (4,803 movies).
 - **Why:** TMDB 5000 ends around 2017 and has no posters. The full dataset has newer films, `poster_path`, `imdb_id`, keywords (some mood-like), and Indian films.
-- **Consequences:** No cast and crew columns, so people search ("Nolan movies") is not in V1 (see O-007). Filtering is required; most rows are obscure.
+- **Consequences:** No cast and crew columns, so people search ("Nolan movies") is not in V1 (see O-007). Filtering is required; most rows are obscure. Measured in Phase 1: the file is a snapshot from late 2023; the newest film in the filtered catalog was released on 2023-09-29.
 
 ### D-015 Use the MovieLens Tag Genome for mood and plot devices
 - **Status:** Accepted, 2026-10-10
 - **Decision:** Join Tag Genome scores (from MovieLens 25M) to the catalog through `links.csv` (`tmdbId`). Store only the top 25 tags per movie with relevance of 0.5 or more.
 - **Alternatives:** Rely on TMDB keywords only; ask the LLM to tag every movie.
 - **Why:** TMDB keywords are inconsistent for twists and moods (Shutter Island has no "twist ending" keyword). The genome gives real, community-derived scores for about 1,100 tags across about 10,000 movies. LLM tagging costs calls and can be wrong for lesser-known films.
+- **Amended by:** D-033 changes which tags are stored (top 25 plus the curated tags).
 - **Consequences:** Movies outside the genome (mostly newer ones) have no tags. LLM tagging stays as a fallback (Phase 10), only if evaluation shows the gap matters. The genome is dense (every movie has a score for every tag), so storing all of it would be about 10 million rows; hence the top 25 rule.
 
 ### D-016 Skip Wikipedia plots and precomputed embeddings for V1
@@ -175,6 +176,33 @@ flowchart TD
 - **Status:** Accepted, 2026-10-10
 - **Decision:** The project is a non-commercial portfolio demo. Credit TMDB ("This product uses the TMDB API but is not endorsed or certified by TMDB.") and MovieLens / GroupLens in the app footer, README and `docs/ATTRIBUTION.md`.
 - **Why:** TMDB-derived data follows TMDB's terms, and the Tag Genome is CC BY-NC. A commercial version would need proper licences.
+
+### D-031 Minimum of 50 votes
+- **Status:** Accepted, 2026-10-10
+- **Decision:** A movie needs a TMDB `vote_count` of at least 50 to be in the catalog. Resolves O-001.
+- **Alternatives:** 100 votes (18,146 movies) or 200 votes (11,775 movies).
+- **Why:** 50 votes leaves 27,856 movies, which matches the size the storage budget was planned for (D-025) and keeps more world cinema and lesser-known films. Ranking uses the weighted rating, so a film with few votes cannot outrank a well-rated popular one just by being in the catalog.
+
+### D-032 A 20-vote minimum for seven Indian languages
+- **Status:** Accepted, 2026-10-10
+- **Decision:** Films whose original language is Hindi, Tamil, Telugu, Malayalam, Kannada, Bengali or Marathi need 20 votes instead of 50. Resolves O-002.
+- **Alternatives:** One threshold for every language; the lower threshold for only the four languages named in O-002.
+- **Why:** These films get far fewer TMDB votes than their audience size suggests. At 50 votes there are 57 Tamil, 14 Telugu and 12 Malayalam films, and well-known ones are cut (Pulimurugan, Rangasthalam, Jigarthanda and Vaaranam Aayiram have 48 or 49 votes). At 20 votes the seven languages have 1,366 films instead of 497.
+- **Consequences:** The catalog is 28,725 movies. The language list and both thresholds are settings at the top of `scripts/prepare-data.sql`.
+
+### D-033 Store the top 25 genome tags per movie plus every curated tag
+- **Status:** Accepted, 2026-10-10
+- **Decision:** `movie_tags` keeps, for each movie, its 25 most relevant genome tags and also any genome tag that the curated list (D-034) maps to, all at relevance 0.5 or more. This amends the storage rule in D-015.
+- **Alternatives:** The top 25 only, as D-015 first said.
+- **Why:** Popular films have 40 to 140 genome tags at 0.5 or more, and the top of that list is filled with tags such as "imdb top 250" or "original". With the top 25 only, 51% of the curated mood and plot tags were dropped: Inception lost "twist ending" (0.76, ranked 74th) and "heist" (0.84, ranked 50th), and only 17% of "atmospheric" tags survived. Those are the tags search boosts on.
+- **Consequences:** 332,167 rows instead of 282,913. Changing the curated list means running `scripts/prepare-data.sql` and the ingest again.
+
+### D-034 The curated tag list is a JSON file in the shared package
+- **Status:** Accepted, 2026-10-10
+- **Decision:** `packages/shared/src/curated-tags.json` holds 47 curated tags (25 plot, 22 mood), each with the 1 to 5 genome tags it stands for. The user approved the list. DuckDB reads the file during data preparation, and the API and web app will import the same file.
+- **Alternatives:** A TypeScript constant; a separate CSV for DuckDB.
+- **Why:** One file that both SQL and TypeScript can read, so the tags kept in the data can never drift from the tags the parse prompt offers (D-012). The preparation script stops if the file names a tag the genome does not have.
+- **Consequences:** D-012 said about 40 tags; the list has 47. That adds roughly 20 tokens to the parse prompt.
 
 ---
 
@@ -252,11 +280,11 @@ flowchart TD
 ## Open decisions
 
 ### O-001 Minimum vote count
-- **Status:** Open
+- **Status:** Superseded by D-031, 2026-10-10
 - **Next step:** Run the threshold query in `scripts/prepare-data.sql` for 50, 100 and 200 votes, record the counts, and choose.
 
 ### O-002 Lower threshold for Indian languages
-- **Status:** Open
+- **Status:** Superseded by D-032, 2026-10-10
 - **Question:** If Hindi, Tamil, Telugu and Malayalam films barely pass the global threshold, use a lower one for those languages?
 - **Next step:** Check counts by `original_language` at each threshold.
 

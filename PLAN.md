@@ -167,7 +167,7 @@ Keep a movie only if:
 - `status = 'Released'`
 - `adult` is false
 - `overview` is not empty
-- `vote_count` is at least the chosen threshold (O-001), possibly lower for Indian languages (O-002)
+- `vote_count` is at least 50 (D-031), or at least 20 for Hindi, Tamil, Telugu, Malayalam, Kannada, Bengali and Marathi films (D-032)
 - duplicate `id` rows are removed, keeping the one with the most votes
 
 ### 5.3 Clean files
@@ -191,16 +191,16 @@ Keep a movie only if:
 | `poster_path`     | text, nullable    |                                                              |
 | `imdb_id`         | text, nullable    |                                                              |
 
-`data/clean/movie_tags.parquet`: `tmdb_id`, `tag`, `relevance` (0.5 to 1.0, at most 25 per movie). (D-015)
+`data/clean/movie_tags.parquet`: `tmdb_id`, `tag`, `relevance` (0.5 to 1.0; the top 25 per movie plus every tag the curated list maps to). (D-015, D-033)
 
 ### 5.4 Storage budget
 
-Estimates for about 30,000 movies. Measure the real numbers after loading and record them in `PROGRESS.md`.
+Estimates for about 30,000 movies (the catalog is 28,725). Measure the real numbers after loading and record them in `PROGRESS.md`.
 
 | Part                            | Estimate            |
 | ------------------------------- | ------------------- |
 | `movies` with text search index | about 70 to 80 MB   |
-| `movie_tags` (top 25 per movie) | about 20 to 30 MB   |
+| `movie_tags` (332,167 rows)     | about 20 to 30 MB   |
 | Embeddings at 768 dimensions    | about 90 MB         |
 | HNSW index                      | about 100 to 150 MB |
 | Total                           | about 0.3 to 0.4 GB |
@@ -343,7 +343,7 @@ Output schema (Zod):
 }
 ```
 
-The curated tag list (about 40 tags) lives in code, each mapped to one or more genome tags.
+The curated tag list (47 tags) lives in `packages/shared/src/curated-tags.json`, each mapped to one or more genome tags (D-034).
 
 ### 7.3 Pick prompt (version `pick-v1`)
 
@@ -474,7 +474,7 @@ Tasks:
   4. Missing data counts: no keywords, no poster, no runtime, no release date.
   5. Export of `data/clean/movies.parquet` (section 5.2 and 5.3).
   6. A check that `genome-tags.csv` contains the tags in the curated list.
-  7. Export of `data/clean/movie_tags.parquet` (top 25 per movie, relevance 0.5 or more, only movies in the catalog).
+  7. Export of `data/clean/movie_tags.parquet` (top 25 per movie plus curated tags, relevance 0.5 or more, only movies in the catalog).
   8. Spot checks for a few known movies (for example Shutter Island, Inception, 3 Idiots).
 - Resolve O-001 and O-002 with the user using the counts. Record the decisions in `DECISIONS.md`.
 - Draft the curated tag list (about 40 tags mapped to genome tags) and get the user's approval.
