@@ -176,6 +176,7 @@ flowchart TD
 - **Status:** Accepted, 2026-10-10
 - **Decision:** The project is a non-commercial portfolio demo. Credit TMDB ("This product uses the TMDB API but is not endorsed or certified by TMDB.") and MovieLens / GroupLens in the app footer, README and `docs/ATTRIBUTION.md`.
 - **Why:** TMDB-derived data follows TMDB's terms, and the Tag Genome is CC BY-NC. A commercial version would need proper licences.
+- **Correction, 2026-10-10:** The MovieLens 25M README does not use a Creative Commons licence. It has its own terms: no commercial use without permission, no redistribution of the data without separate permission, and use must be acknowledged. The citations and terms are in `docs/ATTRIBUTION.md`. Check the redistribution term before the public deployment in Phase 11, because the hosted database will contain tag scores derived from the dataset.
 
 ### D-031 Minimum of 50 votes
 - **Status:** Accepted, 2026-10-10
@@ -217,6 +218,20 @@ flowchart TD
 - **Alternatives:** A high percentile such as 0.9 (1,459 votes), as the IMDb-style formula is often used.
 - **Why:** The catalog already requires 50 votes. A high `m` pulls every film with fewer than a few thousand votes toward the mean, so only blockbusters rank well and "hidden gem" requests suffer. The median still stops a 9.0 from 60 votes beating an 8.4 from 20,000.
 - **Revisit:** In Phase 9, against the evaluation set.
+
+### D-038 Full-text search matches any word, not every word
+- **Status:** Accepted, 2026-10-10
+- **Decision:** The words of a search are joined with OR (built from `plainto_tsquery`, with `&` replaced by `|`). `ts_rank_cd` then ranks movies that match more of the words, and closer together, higher.
+- **Alternatives:** AND between words (`plainto_tsquery` or `websearch_to_tsquery` as they are).
+- **Why:** This search is also the fallback when embeddings fail (D-011), and then it receives whole sentences. With AND, "space movie about loneliness" needs all three words in one movie and returns almost nothing. With OR it returns 2001: A Space Odyssey, Alien and Interstellar first.
+- **Consequences:** A request can match thousands of movies, so the order matters more than the count. Users cannot use search operators such as quotes or minus; `plainto_tsquery` treats all punctuation as spaces, which also means input can never change the query's structure.
+
+### D-039 Baseline ranking: three scores from 0 to 1 with equal weights
+- **Status:** Accepted, 2026-10-10
+- **Decision:** `score = w_text * text_score + w_tags * tag_score + w_rating * rating_score`, with every weight defaulting to 1 and set through `SEARCH_WEIGHT_*`. In the search endpoint, `genres` and `tags` are filters that a movie must fully satisfy, and `tags` also feeds `tag_score`. The formula is explained in `docs/ARCHITECTURE.md`.
+- **Alternatives:** A lower rating weight (0.5), tried first.
+- **Why:** With the rating at 0.5, a title match always beat quality: for "heist", The Hurricane Heist (rated 5.7) came second. At 1, Reservoir Dogs and Dog Day Afternoon reach the top five. The tag weight went up with it, because otherwise highly rated films with a weak tag (The Shawshank Redemption for "twist ending") passed films known for the twist.
+- **Revisit:** In Phase 9, against the evaluation set. In Phase 6 tags become a boost instead of a filter, because 58% of the catalog has no tags.
 
 ---
 
@@ -260,7 +275,7 @@ flowchart TD
 - **Decision:** Express 5 for the API, with `pino-http` (logging), `helmet` (security headers), `cors`, and Zod validation in small middlewares. pnpm monorepo and Zod shared between API and web stay as in D-023.
 - **Alternatives:** Fastify (D-023).
 - **Why:** User's choice. Express is the most widely used Node framework and matches what job listings and interviewers expect, and the user already knows its patterns. Express 5 forwards errors from async handlers to the error middleware, so no `express-async-errors` wrapper is needed.
-- **Consequences:** No built-in schema validation or logger, so both are added as middleware. Request validation uses a shared `validate(schema)` middleware that returns the plan's error format. SSE in Phase 7 is written by hand on `res` (headers, `res.write`, `req.on("close")`).
+- **Consequences:** No built-in schema validation or logger, so both are added as middleware. Request validation uses a shared `validate(schema)` middleware that returns the plan's error format. (As built in Phase 3: a `parseRequest(schema, input)` function called at the top of a handler, which gives typed results; Express 5 makes `req.query` read-only, so a middleware could not replace it.) SSE in Phase 7 is written by hand on `res` (headers, `res.write`, `req.on("close")`).
 
 ### D-027 Node 24 LTS
 - **Status:** Accepted, 2026-10-10

@@ -8,7 +8,7 @@ The plan is in `PLAN.md`; the reasons behind choices are in `DECISIONS.md`.
 - [x] Phase 0: Project setup
 - [x] Phase 1: Data preparation (DuckDB)
 - [x] Phase 2: Ingestion into Postgres
-- [ ] Phase 3: Baseline search without AI
+- [x] Phase 3: Baseline search without AI
 - [ ] Phase 4: LLM provider and embeddings pipeline
 - [ ] Phase 5: Semantic search
 - [ ] Phase 6: Query understanding (parse)
@@ -244,3 +244,62 @@ several batches, and `rating_stats` staying a single row.
   If the vote thresholds are raised later, those rows need deleting by hand or
   a new ingest option.
 - Checking with `EXPLAIN ANALYZE` that queries use the indexes: Phase 3.
+
+## Phase 3: Baseline search without AI
+
+Status on 2026-10-10: done.
+
+### Built
+
+- `GET /api/movies/search` with `q`, `genres`, `tags`, `yearFrom`, `yearTo`,
+  `language`, `minRating`, `limit` and `offset`, validated with Zod.
+- `GET /api/movies/:id` (with the movie's curated tags), `GET /api/genres`,
+  `GET /api/tags`.
+- Ranking from text relevance, tag relevance and weighted rating, with weights
+  from config. The formula, examples and limits are in `docs/ARCHITECTURE.md`.
+- Errors in one shape, with a message per field for bad input.
+- `packages/shared`: genre and language lists, the curated tags as code, and
+  the Zod schemas for requests and responses.
+- Web: search page with a text box, language, year range, genre, plot and mood
+  filters, a results grid with posters, "Show more" paging, loading, empty and
+  error states, a shareable URL, and TMDB and MovieLens credits in the footer.
+  The status page from Phase 0 is at `#status`.
+- `docs/ATTRIBUTION.md` with the citations and dataset terms.
+
+### Checked
+
+| Check                                                | Result                                              |
+| ---------------------------------------------------- | --------------------------------------------------- |
+| `pnpm lint`, `pnpm typecheck`, `pnpm build`          | Pass                                                |
+| `pnpm test`                                          | 91 tests pass (12 shared, 72 API, 7 web)            |
+| "heist" returns heist movies                         | Yes: 281 matches, heist films first                 |
+| Filtering by "twist ending" returns sensible films   | Yes: Fight Club, The Usual Suspects, The Prestige, Se7en, Shutter Island |
+| Bad input returns 400 with field messages            | Yes                                                 |
+| Filters and text search use their indexes            | Yes, table in `docs/ARCHITECTURE.md`                |
+| Search page in a browser                             | Checked with headless Chrome screenshots: results, filters, empty result, status page |
+
+Search times on the full catalog, measured in the API process: 2 to 60 ms.
+The slowest are requests with no filters at all (every movie is scored) and
+very broad text.
+
+### Decided
+
+- Words in a search are joined with OR (D-038).
+- Equal ranking weights by default (D-039).
+- D-019 corrected: MovieLens has its own terms, not a Creative Commons licence.
+
+### Things to know for later phases
+
+- The baseline is weak on sentences, as expected. "action movie with a twist at
+  the end, not too old" returns Teen Titans Go! To the Movies and The Lego
+  Movie. This is the number Phases 5 to 7 have to beat in Phase 9.
+- MovieLens does not allow redistribution of its data without permission. Look
+  at this before deploying publicly in Phase 11.
+
+### Deferred
+
+- `minRating` is in the API but not in the web filters.
+- Clicking a movie does nothing yet; `GET /api/movies/:id` is ready for it.
+- Browser tests of the page (clicking, typing). Only the filter and URL logic
+  has tests.
+- Rejecting unknown query parameters: Phase 8.
