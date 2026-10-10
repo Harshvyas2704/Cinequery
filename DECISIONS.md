@@ -1,0 +1,281 @@
+# Decisions
+
+This file records every important decision for the movie recommendation engine: what was decided, what else was considered, and why. It is meant to be read by people (and linked from the README) and by Claude Code before making changes.
+
+Rules:
+- Each decision has an ID, a status and a date.
+- Status is one of: **Accepted**, **Open** (not decided yet), **Superseded** (replaced by a later decision, with a link).
+- Never delete a decision. If it changes, mark the old one Superseded and add a new one.
+- New decisions go at the end of their section with the next free ID.
+
+---
+
+## Decision tree
+
+The main choices and the options that were rejected. GitHub renders this diagram automatically.
+
+```mermaid
+flowchart TD
+    A[Goal: a backend that uses AI, not only CRUD] --> B[Movie recommendations from natural language]
+
+    B --> C{Who decides which movies exist?}
+    C -->|Database| D[LLM only parses, picks and explains]
+    C -.->|LLM memory| X1[Rejected: invents titles, ignores our catalog]
+
+    D --> E{What does the LLM see when picking?}
+    E -->|Top 30 candidates from search| F[About 3.5k input tokens]
+    E -.->|The whole catalog| X2[Rejected: about 575k tokens per request]
+
+    F --> G{What does the LLM return?}
+    G -->|id and a one line why| H[Details come from our DB]
+    G -.->|Full movie summaries| X3[Rejected: pays for text we own, risks spoilers]
+
+    B --> I{Where does the data come from?}
+    I -->|Full TMDB dataset, filtered| J[Catalog: movies table]
+    I -.->|TMDB 5000| X4[Rejected: ends around 2017, no posters]
+
+    J --> K{How do we know mood and plot devices?}
+    K -->|MovieLens Tag Genome| L[movie_tags table]
+    K -.->|LLM tags every movie| X5[Fallback only, if evaluation shows a gap]
+
+    J --> M{How do we prepare the data?}
+    M -->|DuckDB to clean Parquet| N[Node ingest into Postgres]
+
+    N --> O{Local infrastructure}
+    O -->|Homebrew Postgres 18 with pgvector, Homebrew Redis| P[Docker added at deployment]
+
+    N --> Q{Embedding size}
+    Q -->|768 dimensions, pending model check| R[About 0.3 to 0.4 GB database]
+    Q -.->|All 1.14M movies at 3072 dims| X6[Rejected: about 28 GB]
+```
+
+---
+
+## Product
+
+### D-001 Build a movie recommendation engine driven by natural language
+- **Status:** Accepted, 2026-10-09
+- **Context:** The goal is a portfolio project that shows backend skills beyond CRUD, by integrating an AI system.
+- **Decision:** Users type what they want to watch ("action movie with a twist at the end, not too old") and get recommendations from our own movie database.
+- **Alternatives:** Support ticket triage, document Q&A (RAG), natural language e-commerce search, AI features in the Task Manager API.
+- **Why:** Easy to demo and understand, and it needs the hard parts of AI backends: ingestion pipelines, hybrid search, slow and unreliable LLM calls, caching, cost control and evaluation.
+
+### D-002 Web client for the demo
+- **Status:** Accepted, 2026-10-10
+- **Decision:** Vite + React web app.
+- **Alternatives:** React Native app.
+- **Why:** A link is easier to share and demo than an app. React Native can come later.
+
+### D-003 V1 is anonymous; V2 adds accounts and a personalized landing page
+- **Status:** Accepted, 2026-10-10
+- **Decision:** V1 has anonymous search only. V2 adds auth, likes and dislikes, a taste profile and "For you" rows.
+- **Why:** Gets the core search and AI pipeline working first. Personalization depends on it anyway.
+
+---
+
+## AI design
+
+### D-004 The database is the source of truth; the LLM never adds movies
+- **Status:** Accepted, 2026-10-09
+- **Decision:** Every recommended movie must exist in our database. The LLM helps understand the request and choose among candidates. Any movie ID it returns that was not in the candidate list is dropped.
+- **Alternatives:** Ask the LLM directly for recommendations.
+- **Why:** The LLM can invent titles, recommend movies we have no data for, and ignore our filters. Validating IDs makes hallucinated movies impossible.
+
+### D-005 Use Gemini, behind our own provider interface
+- **Status:** Accepted, 2026-10-10
+- **Decision:** Gemini API for text generation and embeddings. All calls go through `llm/` with an interface (`generateJson`, `embed`); only one file imports the Gemini SDK.
+- **Alternatives:** Claude API.
+- **Why:** A Gemini key is already available and has a free tier. A Claude subscription does not include API access; that needs a separate Console account with prepaid credits. The interface keeps switching or comparing providers to a one-file change.
+
+### D-006 Send only the top 30 search candidates to the LLM, never the whole catalog
+- **Status:** Accepted, 2026-10-10
+- **Context:** One movie in compact form is about 100 to 150 tokens.
+- **Decision:** Database filters and vector search narrow the catalog to 30 candidates. The LLM picks the best ones from those.
+- **Alternatives:** Send the full movie list as input every request.
+- **Why:** Full catalog: thousands of movies times ~120 tokens, hundreds of thousands of input tokens per request (about 575k for 4,800 movies). 30 candidates: about 3.5k. Over 150 times cheaper, much faster, fits free tier rate limits, and models choose better from short lists.
+
+### D-007 The LLM returns only IDs and a one-sentence reason
+- **Status:** Accepted, 2026-10-10
+- **Decision:** Pick output is `{"picks":[{"id":number,"why":string}]}`, with `why` at most 25 words. Title, year, poster, overview and rating come from our database.
+- **Alternatives:** Ask for a 2 to 3 sentence summary of each movie.
+- **Why:** Output tokens cost more and are slower. We already store the overview, so a summary pays for text we own and risks wrong plot details. The reason ("why it fits this request") is the only part the LLM adds.
+
+### D-008 Two small prompts instead of one master prompt
+- **Status:** Accepted, 2026-10-10
+- **Decision:** A `parse` prompt (request to filters) and a `pick` prompt (choose and explain). Each is a versioned file; the version is logged with every call.
+- **Why:** Each is short, testable and debuggable on its own, and one can change without affecting the other.
+
+### D-009 Token saving rules
+- **Status:** Accepted, 2026-10-10
+- **Decision:**
+  - Short JSON keys and small integer IDs.
+  - Candidates sent as compact lines (`id | title | year | genres | tags | overview`), not JSON objects.
+  - Structured output mode (response schema) so replies are valid JSON.
+  - Thinking set to the lowest level the model allows for parse and pick, because thinking tokens are billed as output.
+  - Cache parse results, query embeddings and final results by normalized query.
+- **Why:** Each one cuts tokens, retries or latency, and together they keep a search within the free tier.
+
+### D-010 No spoilers in reasons
+- **Status:** Accepted, 2026-10-10
+- **Decision:** The pick prompt forbids revealing twists, endings or major spoilers. The evaluation set includes checks for it.
+- **Why:** A user asking for "a twist at the end" does not want the twist explained.
+
+### D-011 Every AI step has a fallback
+- **Status:** Accepted, 2026-10-09
+- **Decision:** Parse fails: search with the raw text. Embedding fails: full-text search. Pick fails: return search order without reasons. Budget exceeded: switch AI steps off.
+- **Why:** The LLM is slow, rate limited and sometimes returns invalid output. Users should never get an error because of it.
+
+### D-012 A curated tag list in the parse prompt, not the full genome vocabulary
+- **Status:** Accepted, 2026-10-10
+- **Decision:** The parse prompt lists about 40 hand-picked tags (twist ending, dark, feel-good, slow, atmospheric, and so on), each mapped to Tag Genome tags.
+- **Alternatives:** Put all ~1,100 genome tags in the prompt.
+- **Why:** The full list would add thousands of input tokens to every request, and many genome tags are too narrow or unsuitable to show users.
+
+### D-013 Translate the search meaning to English during parsing
+- **Status:** Accepted, 2026-10-10
+- **Decision:** The parse step writes `searchText` in English, so Hindi and Hinglish requests ("koi achhi suspense movie batao") work.
+- **Why:** Catalog text is mostly English. A useful demo point for users in India.
+
+---
+
+## Data
+
+### D-014 Use the full TMDB dataset, filtered, instead of TMDB 5000
+- **Status:** Accepted, 2026-10-10
+- **Decision:** Source: `ada-datadruids/full_tmdb_movies_dataset` on Hugging Face (about 1.14 million rows). Keep only movies that are released, not adult, have an overview and meet a minimum vote count.
+- **Alternatives:** `AiresPucrs/tmdb-5000-movies` (4,803 movies).
+- **Why:** TMDB 5000 ends around 2017 and has no posters. The full dataset has newer films, `poster_path`, `imdb_id`, keywords (some mood-like), and Indian films.
+- **Consequences:** No cast and crew columns, so people search ("Nolan movies") is not in V1 (see O-007). Filtering is required; most rows are obscure.
+
+### D-015 Use the MovieLens Tag Genome for mood and plot devices
+- **Status:** Accepted, 2026-10-10
+- **Decision:** Join Tag Genome scores (from MovieLens 25M) to the catalog through `links.csv` (`tmdbId`). Store only the top 25 tags per movie with relevance of 0.5 or more.
+- **Alternatives:** Rely on TMDB keywords only; ask the LLM to tag every movie.
+- **Why:** TMDB keywords are inconsistent for twists and moods (Shutter Island has no "twist ending" keyword). The genome gives real, community-derived scores for about 1,100 tags across about 10,000 movies. LLM tagging costs calls and can be wrong for lesser-known films.
+- **Consequences:** Movies outside the genome (mostly newer ones) have no tags. LLM tagging stays as a fallback (Phase 10), only if evaluation shows the gap matters. The genome is dense (every movie has a score for every tag), so storing all of it would be about 10 million rows; hence the top 25 rule.
+
+### D-016 Skip Wikipedia plots and precomputed embeddings for V1
+- **Status:** Accepted, 2026-10-10
+- **Decision:** Do not use Wikipedia Movie Plots or the Movie Plot Embeddings Dataset in V1.
+- **Why:** Wikipedia plots have no TMDB ID (joining by title and year is messy) and contain spoilers. Precomputed BGE-M3 embeddings would force us to run that model ourselves for queries, since query and document embeddings must come from the same model.
+- **Revisit if:** Evaluation shows twist detection is still weak after the genome.
+
+### D-017 Prepare data with DuckDB, load into Postgres with Node
+- **Status:** Accepted, 2026-10-10
+- **Decision:** `scripts/prepare-data.sql` runs in DuckDB: explore, filter, deduplicate, join the genome, and export `data/clean/movies.parquet` and `data/clean/movie_tags.parquet`. A Node ingest script loads those into Postgres.
+- **Alternatives:** Parse the raw 1.14M-row file in Node.
+- **Why:** DuckDB queries CSV and Parquet directly with SQL, which makes exploration and filtering fast and repeatable. The Node ingest stays small and only handles clean data.
+
+### D-018 Separate offline data building from online serving
+- **Status:** Accepted, 2026-10-10
+- **Decision:** Offline: prepare, ingest, embed (batch jobs, slow is fine, must be correct and restartable). Online: answer requests (fast, cached, with fallbacks). The app never reads raw dataset files.
+- **Why:** This is how real search and recommendation systems work, and it keeps each side simple.
+
+### D-019 Non-commercial use only, with attribution
+- **Status:** Accepted, 2026-10-10
+- **Decision:** The project is a non-commercial portfolio demo. Credit TMDB ("This product uses the TMDB API but is not endorsed or certified by TMDB.") and MovieLens / GroupLens in the app footer, README and `docs/ATTRIBUTION.md`.
+- **Why:** TMDB-derived data follows TMDB's terms, and the Tag Genome is CC BY-NC. A commercial version would need proper licences.
+
+---
+
+## Infrastructure
+
+### D-020 Homebrew Postgres 18 with pgvector and Homebrew Redis for local development
+- **Status:** Accepted, 2026-10-10
+- **Decision:** Use the already installed Homebrew `postgresql@18`, add `pgvector` with `brew install pgvector`, and run Redis with `brew services`.
+- **Alternatives:** Docker Compose with the `pgvector/pgvector` image.
+- **Why:** Postgres 18 is already installed and running, and the Homebrew pgvector formula supports it. Docker Desktop is heavy on a MacBook Air.
+- **Consequences:** Docker is added in the deployment phase (and for CI). The plan's Phase 0 uses local services.
+
+### D-021 768-dimension embeddings, if the model supports it
+- **Status:** Accepted, pending model check, 2026-10-10
+- **Decision:** Store embeddings at 768 dimensions.
+- **Alternatives:** 1,536 or 3,072 dimensions.
+- **Why:** Storage (about 3 KB per movie at 768 vs 12 KB at 3,072), smaller HNSW index, cheaper hosting. pgvector can only index the `vector` type up to 2,000 dimensions; higher needs `halfvec`.
+- **Consequences:** Must be decided before the first embedding run; changing it means embedding everything again.
+
+### D-022 Hand-written SQL, no ORM
+- **Status:** Accepted, 2026-10-09
+- **Decision:** `pg` with plain SQL and SQL migration files.
+- **Why:** The project is about learning backend engineering; writing SQL by hand makes query plans, indexes and pgvector usage visible.
+
+### D-023 Fastify, pnpm monorepo, Zod shared between API and web
+- **Status:** Superseded by D-026, 2026-10-10
+- **Why:** Fastify is fast and has built-in logging (pino) and schema support. Shared Zod schemas keep API and client types in sync.
+
+### D-024 Keep LLM call logs for 30 days
+- **Status:** Accepted, 2026-10-10
+- **Decision:** A daily job deletes `llm_calls` rows older than 30 days.
+- **Why:** The table grows with every AI call. Recent data is enough for stats and debugging.
+
+### D-025 Filter the catalog to keep storage small
+- **Status:** Accepted, 2026-10-10
+- **Decision:** Embed only the filtered catalog.
+- **Why:** All 1.14M movies at 3,072 dimensions would need about 28 GB (vectors plus index). A filtered catalog of about 30,000 movies at 768 dimensions is about 0.3 to 0.4 GB in total.
+
+### D-026 Express instead of Fastify
+- **Status:** Accepted, 2026-10-10
+- **Decision:** Express 5 for the API, with `pino-http` (logging), `helmet` (security headers), `cors`, and Zod validation in small middlewares. pnpm monorepo and Zod shared between API and web stay as in D-023.
+- **Alternatives:** Fastify (D-023).
+- **Why:** User's choice. Express is the most widely used Node framework and matches what job listings and interviewers expect, and the user already knows its patterns. Express 5 forwards errors from async handlers to the error middleware, so no `express-async-errors` wrapper is needed.
+- **Consequences:** No built-in schema validation or logger, so both are added as middleware. Request validation uses a shared `validate(schema)` middleware that returns the plan's error format. SSE in Phase 7 is written by hand on `res` (headers, `res.write`, `req.on("close")`).
+
+### D-027 Node 24 LTS
+- **Status:** Accepted, 2026-10-10
+- **Decision:** Node 24 LTS, installed through nvm and set as the default. Pinned with `.nvmrc` and `engines` in `package.json`.
+- **Alternatives:** Node 22 LTS; staying on the installed Node 20.18.1.
+- **Why:** Node 20 is past end of life. Node 24 is the newest LTS line, so it has the longest support window for a new project.
+- **Consequences:** Global npm packages are per Node version under nvm, so pnpm was installed again for Node 24. Resolves O-004.
+
+### D-028 Numbered SQL migration files with our own small runner
+- **Status:** Accepted, 2026-10-10
+- **Decision:** Migrations are files named `0001_name.sql` in `apps/api/src/migrations`. `pnpm db:migrate` runs the ones not yet listed in a `schema_migrations` table, in file name order, each in its own transaction, under a Postgres advisory lock. There are no down migrations.
+- **Alternatives:** `node-pg-migrate`.
+- **Why:** The runner is about 80 lines, adds no dependency, and keeps the SQL and what happens to it visible (D-022). A failed migration rolls back completely, and two runs at once wait for each other.
+- **Consequences:** Undoing a change means writing a new migration. A statement that cannot run inside a transaction (such as `CREATE INDEX CONCURRENTLY`) would need the runner extended.
+
+### D-029 ioredis as the Redis client, failing fast when Redis is down
+- **Status:** Accepted, 2026-10-10
+- **Decision:** Use `ioredis`, with `enableOfflineQueue: false` on the API's connection.
+- **Alternatives:** `node-redis`.
+- **Why:** BullMQ (Phase 4) is built on ioredis, so this avoids two Redis clients. With the offline queue off, a command sent while Redis is down fails in milliseconds instead of waiting for a reconnect, which is what the health check and the cache fallbacks (D-011) need.
+- **Consequences:** A command sent in the first moments after start, before the connection is ready, also fails. BullMQ workers will need their own connection with different options.
+
+### D-030 TypeScript 6.0, not 7
+- **Status:** Accepted, 2026-10-10
+- **Decision:** Pin TypeScript to the 6.0 line.
+- **Why:** `typescript-eslint` 8 supports TypeScript below 6.1 only, so linting would break on TypeScript 7.
+- **Revisit when:** `typescript-eslint` supports TypeScript 7.
+
+---
+
+## Open decisions
+
+### O-001 Minimum vote count
+- **Status:** Open
+- **Next step:** Run the threshold query in `scripts/prepare-data.sql` for 50, 100 and 200 votes, record the counts, and choose.
+
+### O-002 Lower threshold for Indian languages
+- **Status:** Open
+- **Question:** If Hindi, Tamil, Telugu and Malayalam films barely pass the global threshold, use a lower one for those languages?
+- **Next step:** Check counts by `original_language` at each threshold.
+
+### O-003 Gemini models and embedding size
+- **Status:** Open
+- **Next step:** Check the current Gemini docs for the text model (fast and cheap, with structured output and adjustable thinking) and the embedding model, and whether it supports 768 output dimensions. Confirm D-021.
+
+### O-004 Node version
+- **Status:** Superseded by D-027, 2026-10-10
+- **Note:** The machine had Node 20.18.1, which is past end of life. For a new project, Node 22 or 24 LTS through nvm was recommended.
+
+### O-005 Hosting
+- **Status:** Open, decide in the deployment phase
+- **Constraint:** Postgres with pgvector, Redis, a container host for the API and worker, and static hosting for the web app.
+
+### O-006 Project name
+- **Status:** Open
+- **Note:** The workspace packages are named `@cinequery/api`, `@cinequery/web` and `@cinequery/shared`, after the repository. Renaming later is a find and replace.
+
+### O-007 People search (actors, directors)
+- **Status:** Open, not in V1
+- **Note:** The full TMDB dataset has no cast or crew. Would need another source joined on TMDB ID.
