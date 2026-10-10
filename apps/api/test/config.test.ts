@@ -37,6 +37,21 @@ describe("loadConfig", () => {
         weights: { text: 1, tags: 1, rating: 1 },
         posterBaseUrl: "https://image.tmdb.org/t/p/w342",
       },
+      llm: {
+        apiKey: undefined,
+        textModel: "gemini-3.8-flash",
+        thinkingLevel: "low",
+        embeddingModel: "gemini-embedding-2",
+        embeddingDimensions: 768,
+        retry: { maxRetries: 3, baseDelayMs: 1000, maxDelayMs: 30000 },
+      },
+      embed: {
+        batchSize: 20,
+        requestsPerMinute: 7,
+        timeoutMs: 60000,
+        jobAttempts: 3,
+        exportDir: expect.stringMatching(/exports$/),
+      },
     });
   });
 
@@ -95,6 +110,14 @@ describe("loadConfig", () => {
     expect(loadConfig({ ...valid, WEB_ORIGIN: "https://example.com/app/" }).webOrigin).toBe(
       "https://example.com",
     );
+  });
+
+  it("reads the Gemini key without requiring it", () => {
+    expect(loadConfig(valid).llm.apiKey).toBeUndefined();
+    expect(loadConfig({ ...valid, GEMINI_API_KEY: "secret-key" }).llm.apiKey).toBe("secret-key");
+    expect(problemsOf({ ...valid, GEMINI_THINKING_LEVEL: "none" })).toEqual([
+      "GEMINI_THINKING_LEVEL must be minimal, low, medium or high",
+    ]);
   });
 
   it("never puts values in the error message", () => {

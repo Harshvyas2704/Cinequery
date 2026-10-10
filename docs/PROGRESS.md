@@ -9,7 +9,7 @@ The plan is in `PLAN.md`; the reasons behind choices are in `DECISIONS.md`.
 - [x] Phase 1: Data preparation (DuckDB)
 - [x] Phase 2: Ingestion into Postgres
 - [x] Phase 3: Baseline search without AI
-- [ ] Phase 4: LLM provider and embeddings pipeline
+- [x] Phase 4: LLM provider and embeddings pipeline (prototype scope: 980 of 28,725 movies embedded, D-041)
 - [ ] Phase 5: Semantic search
 - [ ] Phase 6: Query understanding (parse)
 - [ ] Phase 7: Pick, reasons and streaming
@@ -50,6 +50,9 @@ Actions run, which happens on the first push.
 | `pnpm build`     | Builds every package                                            |
 | `pnpm db:migrate`| Applies pending migrations to `DATABASE_URL`                    |
 | `pnpm ingest`    | Loads `data/clean/*.parquet` into Postgres (Phase 2)            |
+| `pnpm embed`     | Embeds movies that have no current vector (Phase 4)             |
+| `pnpm embed:status` | Coverage, queue and failed batches                           |
+| `pnpm embed:export` / `embed:import` | Moves embeddings between databases through a file |
 
 Integration tests are the files named `*.int.test.ts`.
 
@@ -303,3 +306,102 @@ very broad text.
 - Browser tests of the page (clicking, typing). Only the filter and URL logic
   has tests.
 - Rejecting unknown query parameters: Phase 8.
+
+## Phase 4: LLM provider and embeddings pipeline
+
+Status on 2026-10-10: done for the prototype. The code is built and tested.
+980 of 28,725 movies are embedded, because the Gemini free tier allows 1,000
+embedded texts a day. The user decided to build the prototype on those 980 and
+not to pay for now (D-041), so the plan's "whole catalog embedded" is put off.
+
+### Built
+
+- `apps/api/src/llm`: the `LlmProvider` interface, a wrapper with timeouts,
+  retries and the `llm_calls` log, the Gemini backend (the only file importing
+  the SDK) and a fake backend for tests.
+- Migration `0003_embeddings.sql`: `movie_embeddings` with an HNSW index, and
+  `llm_calls`.
+- `apps/api/src/embeddings` and `apps/api/src/jobs`: the embedding text and
+  hash, the batch processor, the BullMQ queue and worker, export and import.
+- Commands: `pnpm embed [--limit N]`, `pnpm embed:status`, `pnpm embed:export`,
+  `pnpm embed:import`.
+- How it works is in `docs/ARCHITECTURE.md`; the reasons are in D-040 and D-042.
+
+### Decided
+
+- `gemini-3.8-flash` (thinking `low`) and `gemini-embedding-2` at 768
+  dimensions (D-040). O-003 is closed and D-021 confirmed.
+
+### Checked
+
+| Check                                              | Result                                           |
+| -------------------------------------------------- | ------------------------------------------------ |
+| `pnpm lint`, `pnpm typecheck`, `pnpm build`        | Pass                                             |
+| `pnpm test`                                        | 128 tests pass (12 shared, 109 API, 7 web)       |
+| Fake provider: retry on 429 and 5xx                | Pass                                             |
+| Fake provider: no retry on 400, timeout, bad JSON  | Pass                                             |
+| Every attempt logged in `llm_calls`                | Pass                                             |
+| Second run embeds nothing and makes no API call    | Pass                                             |
+| Resume after a simulated crash                     | Pass: the stored batch is not sent again         |
+| Stop and restart                                   | Pass                                             |
+| Export, then import into an empty table            | Pass: identical vectors                          |
+| Real API: embed and store                          | 980 movies in 49 requests                        |
+| Real API: whole catalog embedded                   | **No.** Stopped by the daily quota at 980        |
+
+### Measured with the real API
+
+| What                                   | Number                                             |
+| -------------------------------------- | -------------------------------------------------- |
+| Movies embedded                        | 980 of 28,725 (3.4%)                               |
+| Input tokens                           | 166,550, about 170 a movie                         |
+| Estimated tokens for the whole catalog | about 4.9 million                                  |
+| Time for one batch of 20               | about 2 seconds                                    |
+| Free tier, per minute                  | rate limited above roughly 28,000 tokens           |
+| Free tier, per day                     | 1,000 texts (`embed_content_free_tier_requests`)   |
+| `movie_embeddings` at 980 rows         | 8.2 MB in total, of which the HNSW index is 4.0 MB |
+| Estimate at 28,725 rows                | about 240 MB (plan: 190 to 240 MB)                 |
+| Export file at 980 rows                | 3.0 MB (about 90 MB for the whole catalog)         |
+
+Search by meaning already works on the 980 embedded films. The nearest films to
+each query, by cosine similarity:
+
+| Query                             | Nearest                                                    |
+| --------------------------------- | ---------------------------------------------------------- |
+| space movie about loneliness      | Solaris, Silent Running, Dark Star, Lost in Translation    |
+| a prison escape                   | Cool Hand Luke, Brubaker, Down by Law, Grand Illusion      |
+| feel-good comedy about friendship | The Spanish Apartment, Ghost World, About a Boy            |
+| koi achhi suspense movie batao    | Secret Window, Vertigo, Caché, Rear Window, The Sixth Sense|
+
+The Hinglish query works without translation.
+
+### Things to know for later phases
+
+- **The daily quota is shared.** From Phase 5 every search that is not cached
+  embeds its query, and that counts against the same 1,000 a day.
+- **`gemini-3.8-flash` was slow and busy when tried:** 5.3 seconds for a small
+  structured reply, and two of three attempts answered 503 first. Measure again
+  in Phase 6 before settling on it for the parse step.
+- **A bug found and fixed here:** the retry wrapper waited as long as the API
+  asked, and the API asked for 11 hours. The first long run sat silent for five
+  minutes before I noticed. It now refuses waits above `LLM_RETRY_MAX_MS`, the
+  job stops with the API's message, and both cases have tests.
+- The 980 embedded films are the lowest database ids, which are TMDB's oldest
+  entries: many classics (The Dark Knight, Fight Club, Pulp Fiction, The
+  Matrix), 334 films from 2000 or later, almost none after 2010. New runs embed
+  best-known films first.
+
+### Put off until after the prototype
+
+1. Embed the rest of the catalog (options are listed in D-041).
+2. Run `pnpm embed` until `pnpm embed:status` shows full coverage.
+3. Record the total time, tokens and final table and index sizes here.
+
+Until then, do not run `pnpm embed` casually: it spends the day's quota, which
+search queries also need.
+
+### Deferred
+
+- A separate long-running worker process. `pnpm embed` runs the worker itself
+  and exits when the queue is empty.
+- Prompt files in `llm/prompts/`: they arrive with the parse and pick prompts
+  in Phases 6 and 7.

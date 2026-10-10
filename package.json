@@ -15,7 +15,11 @@
     "lint": "eslint .",
     "typecheck": "pnpm build:shared && pnpm -r typecheck",
     "db:migrate": "pnpm --filter @cinequery/api db:migrate",
-    "ingest": "pnpm --filter @cinequery/api ingest"
+    "ingest": "pnpm --filter @cinequery/api ingest",
+    "embed": "pnpm --filter @cinequery/api embed",
+    "embed:status": "pnpm --filter @cinequery/api embed:status",
+    "embed:export": "pnpm --filter @cinequery/api embed:export",
+    "embed:import": "pnpm --filter @cinequery/api embed:import"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
