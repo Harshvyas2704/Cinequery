@@ -2,6 +2,7 @@ import { CURATED_TAGS, GENRES, searchQuerySchema } from "@cinequery/shared";
 import { Router } from "express";
 import type pg from "pg";
 import { z } from "zod";
+import { NO_FILTERS } from "../search/filters.js";
 import { getMovie, type SearchSettings, searchMovies } from "../search/movies.js";
 import { HttpError, parseRequest } from "./errors.js";
 
@@ -24,7 +25,28 @@ export function moviesRouter({ pool, search }: MoviesDeps): Router {
 
   router.get("/movies/search", async (req, res) => {
     const query = parseRequest(searchQuerySchema, req.query);
-    res.json(await searchMovies(pool, query, search));
+    res.json(
+      await searchMovies(
+        pool,
+        {
+          q: query.q,
+          filters: {
+            ...NO_FILTERS,
+            genres: query.genres,
+            yearFrom: query.yearFrom,
+            yearTo: query.yearTo,
+            language: query.language,
+            minRating: query.minRating,
+          },
+          // On the filter page a chosen tag is a requirement, not a preference.
+          tags: query.tags,
+          tagMode: "require",
+          limit: query.limit,
+          offset: query.offset,
+        },
+        search,
+      ),
+    );
   });
 
   router.get("/movies/:id", async (req, res) => {

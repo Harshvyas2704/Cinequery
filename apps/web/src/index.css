@@ -263,6 +263,35 @@ select {
   font-weight: 400;
 }
 
+.understood {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.7rem 0 0;
+}
+
+.understood .label {
+  color: var(--muted);
+  margin-right: 0.2rem;
+}
+
+.understood .tag {
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--chip-on-bg);
+}
+
+.understood .search-text {
+  color: var(--muted);
+}
+
+.relaxed {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+}
+
 .how table {
   width: 100%;
   margin-top: 0.6rem;

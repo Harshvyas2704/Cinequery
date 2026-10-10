@@ -18,6 +18,10 @@ export type GenerateJsonInput = {
   maxOutputTokens: number;
   timeoutMs: number;
   requestId?: string;
+  /** Use this model instead of the provider's default text model. */
+  model?: string;
+  /** minimal, low, medium or high, instead of the provider's default. */
+  thinkingLevel?: string;
 };
 
 export type EmbedInput = {

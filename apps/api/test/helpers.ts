@@ -44,14 +44,22 @@ export const testAppConfig: AppDeps["config"] = {
   search: testSearch,
   recommend: {
     candidates: 30,
-    weights: { similarity: 1, rating: 0.2 },
+    weights: { similarity: 1, tags: 0.1, rating: 0.2 },
     embedTimeoutMs: 500,
     embeddingCacheTtlSeconds: 60,
+    reference: { weight: 0.5, minTitleSimilarity: 0.55 },
+    parse: {
+      model: "fake-parse",
+      thinkingLevel: "minimal",
+      timeoutMs: 500,
+      maxOutputTokens: 500,
+      cacheTtlSeconds: 60,
+    },
   },
   llm: { embeddingModel: "fake-embedding" },
 };
 
-const noCache: AppDeps["queryEmbeddingCache"] = { get: async () => null, set: async () => {} };
+const noCache = { get: async () => null, set: async () => {} };
 
 export async function startApp(deps: {
   // Health tests pass a fake with only the query they need; other tests pass a real pool.
@@ -60,11 +68,14 @@ export async function startApp(deps: {
   config?: AppDeps["config"];
   llm?: AppDeps["llm"];
   queryEmbeddingCache?: AppDeps["queryEmbeddingCache"];
+  parseCache?: AppDeps["parseCache"];
+  now?: AppDeps["now"];
 }): Promise<{ url: string; close: () => Promise<void> }> {
   const app = createApp({
     logger: silentLogger,
     llm: null,
     queryEmbeddingCache: noCache,
+    parseCache: noCache,
     ...deps,
     config: deps.config ?? testAppConfig,
     pool: deps.pool as AppDeps["pool"],

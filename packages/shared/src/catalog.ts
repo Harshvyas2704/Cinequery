@@ -25,7 +25,11 @@ export const GENRES = [
 
 export type Genre = (typeof GENRES)[number];
 
-/** Languages offered as a filter, by ISO 639-1 code as TMDB uses them. Most films first. */
+/**
+ * Languages with at least 20 films in the catalog, by ISO 639-1 code as TMDB
+ * uses them, most films first. Used for the language filter and to check the
+ * language the parse step returns.
+ */
 export const LANGUAGES = [
   { code: "en", name: "English" },
   { code: "fr", name: "French" },
@@ -42,11 +46,29 @@ export const LANGUAGES = [
   { code: "ta", name: "Tamil" },
   { code: "ml", name: "Malayalam" },
   { code: "tr", name: "Turkish" },
+  { code: "pl", name: "Polish" },
+  { code: "sv", name: "Swedish" },
+  { code: "da", name: "Danish" },
+  { code: "nl", name: "Dutch" },
   { code: "te", name: "Telugu" },
+  { code: "no", name: "Norwegian" },
+  { code: "th", name: "Thai" },
+  { code: "fa", name: "Persian" },
+  { code: "cs", name: "Czech" },
+  { code: "fi", name: "Finnish" },
+  { code: "ar", name: "Arabic" },
+  { code: "hu", name: "Hungarian" },
   { code: "bn", name: "Bengali" },
+  { code: "he", name: "Hebrew" },
+  { code: "ro", name: "Romanian" },
+  { code: "el", name: "Greek" },
+  { code: "id", name: "Indonesian" },
+  { code: "is", name: "Icelandic" },
   { code: "kn", name: "Kannada" },
   { code: "mr", name: "Marathi" },
 ] as const;
+
+export const LANGUAGE_CODES: readonly string[] = LANGUAGES.map(({ code }) => code);
 
 export type CuratedTag = {
   /** The name shown to users and offered to the parse prompt. */

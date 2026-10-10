@@ -101,6 +101,30 @@ const envSchema = z.object({
   RECOMMEND_CANDIDATES: wholeNumber(1, 200).default(30),
   RECOMMEND_WEIGHT_SIMILARITY: weight().default(1),
   RECOMMEND_WEIGHT_RATING: weight().default(0.2),
+  // How much a wanted tag ("twist ending") lifts a movie that has it.
+  RECOMMEND_WEIGHT_TAGS: weight().default(0.1),
+  // "like Inception": how far the search moves toward the named film, 0 to 1.
+  RECOMMEND_REFERENCE_WEIGHT: number({ min: 0, max: 1, expected: "a number between 0 and 1" }).default(
+    0.5,
+  ),
+  // How close a typed title must be to a real one to count as that film, 0 to 1.
+  REFERENCE_TITLE_MIN_SIMILARITY: number({
+    min: 0,
+    max: 1,
+    expected: "a number between 0 and 1",
+  }).default(0.55),
+  // The parse step (prompt parse-v1). It runs while the user waits, so it uses
+  // a small, fast model with the least thinking (D-045).
+  GEMINI_PARSE_MODEL: z.string().min(1).default("gemini-3.5-flash-lite"),
+  GEMINI_PARSE_THINKING_LEVEL: z
+    .enum(["minimal", "low", "medium", "high"], {
+      error: message("minimal, low, medium or high"),
+    })
+    .default("minimal"),
+  PARSE_TIMEOUT_MS: wholeNumber(100, 60_000).default(4000),
+  PARSE_MAX_OUTPUT_TOKENS: wholeNumber(50, 4000).default(500),
+  // How long a parsed request is kept in Redis. Default: 7 days.
+  PARSE_CACHE_TTL_SECONDS: wholeNumber(1, 31_536_000).default(604_800),
   EMBED_QUERY_TIMEOUT_MS: wholeNumber(100, 60_000).default(4000),
   // How long a request's embedding is kept in Redis. It never goes stale for a
   // given model, so this only bounds memory. Default: 7 days.
@@ -144,9 +168,17 @@ export type Config = {
   };
   recommend: {
     candidates: number;
-    weights: { similarity: number; rating: number };
+    weights: { similarity: number; tags: number; rating: number };
     embedTimeoutMs: number;
     embeddingCacheTtlSeconds: number;
+    reference: { weight: number; minTitleSimilarity: number };
+    parse: {
+      model: string;
+      thinkingLevel: string;
+      timeoutMs: number;
+      maxOutputTokens: number;
+      cacheTtlSeconds: number;
+    };
   };
   embed: {
     batchSize: number;
@@ -225,10 +257,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       candidates: parsed.RECOMMEND_CANDIDATES,
       weights: {
         similarity: parsed.RECOMMEND_WEIGHT_SIMILARITY,
+        tags: parsed.RECOMMEND_WEIGHT_TAGS,
         rating: parsed.RECOMMEND_WEIGHT_RATING,
       },
       embedTimeoutMs: parsed.EMBED_QUERY_TIMEOUT_MS,
       embeddingCacheTtlSeconds: parsed.QUERY_EMBEDDING_TTL_SECONDS,
+      reference: {
+        weight: parsed.RECOMMEND_REFERENCE_WEIGHT,
+        minTitleSimilarity: parsed.REFERENCE_TITLE_MIN_SIMILARITY,
+      },
+      parse: {
+        model: parsed.GEMINI_PARSE_MODEL,
+        thinkingLevel: parsed.GEMINI_PARSE_THINKING_LEVEL,
+        timeoutMs: parsed.PARSE_TIMEOUT_MS,
+        maxOutputTokens: parsed.PARSE_MAX_OUTPUT_TOKENS,
+        cacheTtlSeconds: parsed.PARSE_CACHE_TTL_SECONDS,
+      },
     },
     embed: {
       batchSize: parsed.EMBED_BATCH_SIZE,

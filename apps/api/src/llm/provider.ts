@@ -130,7 +130,7 @@ export function createLlmProvider(backend: LlmBackend, options: ProviderOptions)
       call(
         {
           stage: input.stage,
-          model: backend.textModel,
+          model: input.model ?? backend.textModel,
           promptVersion: input.promptVersion,
           requestId: input.requestId,
         },

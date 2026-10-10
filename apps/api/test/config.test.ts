@@ -48,9 +48,17 @@ describe("loadConfig", () => {
       },
       recommend: {
         candidates: 30,
-        weights: { similarity: 1, rating: 0.2 },
+        weights: { similarity: 1, tags: 0.1, rating: 0.2 },
         embedTimeoutMs: 4000,
         embeddingCacheTtlSeconds: 604800,
+        reference: { weight: 0.5, minTitleSimilarity: 0.55 },
+        parse: {
+          model: "gemini-3.5-flash-lite",
+          thinkingLevel: "minimal",
+          timeoutMs: 4000,
+          maxOutputTokens: 500,
+          cacheTtlSeconds: 604800,
+        },
       },
       embed: {
         batchSize: 20,

@@ -139,6 +139,7 @@ flowchart TD
 ### D-040 Gemini models: 3.8 Flash for text, Embedding 2 at 768 dimensions
 - **Status:** Accepted, 2026-10-10
 - **Decision:** `gemini-3.8-flash` for parse and pick, with thinking at `low`. `gemini-embedding-2` for embeddings, at 768 dimensions. All four are config values (`GEMINI_TEXT_MODEL`, `GEMINI_THINKING_LEVEL`, `GEMINI_EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`). Resolves O-003 and confirms D-021.
+- **Amended by:** D-045 moves the parse step to `gemini-3.5-flash-lite`.
 - **Alternatives:** `gemini-embedding-001` (older, text only, 2,048-token input, vectors need normalizing by hand). A Flash-Lite model for text.
 - **Why:** The user chose Flash and Embedding 2. Embedding 2 is the current stable model, returns unit-length vectors at 768 dimensions, and its batch endpoint reports token counts.
 - **Measured with the user's key:**
@@ -172,6 +173,38 @@ flowchart TD
 - **Why:** Cosine similarities of the nearest 30 sit within about 0.05 of each other, while rating scores differ by up to 0.3. At equal weights the rating would decide the order and meaning would only pick the candidates. At 0.2 one full star of rating is worth 0.02, enough to lift 2001: A Space Odyssey above Silent Running for "space movie about loneliness" without burying the closest match.
 - **Consequences:** While a user waits, the embedding call gets one quick retry and a 4-second timeout, then the fallback (`LLM_ONLINE_*`, `EMBED_QUERY_TIMEOUT_MS`). Batch jobs keep the longer retry settings. A failed embedding is not cached, so the next request tries again.
 - **Revisit:** In Phase 9, against the evaluation set.
+
+### D-045 The parse step uses Gemini 3.5 Flash-Lite with minimal thinking
+- **Status:** Accepted, 2026-10-10
+- **Decision:** `GEMINI_PARSE_MODEL=gemini-3.5-flash-lite` with `GEMINI_PARSE_THINKING_LEVEL=minimal`. `generateJson` takes an optional model and thinking level per call, so each stage can have its own. The default text model for later stages stays `gemini-3.8-flash` (D-040) until it is measured for the pick step.
+- **Alternatives:** `gemini-3.8-flash` with thinking `medium`.
+- **Why:** Measured with the user's key on the real prompt (about 505 input tokens):
+
+  | Model and thinking          | Time          | Output tokens | Result  |
+  | --------------------------- | ------------- | ------------- | ------- |
+  | 3.5 Flash-Lite, minimal     | 1.1 to 1.9 s  | 60 to 110     | correct |
+  | 3.8 Flash, medium           | 5.2 s         | 242           | correct |
+  | 3.7 Flash, low              | 39.7 s        | 66            | correct |
+  | 3.8 Flash, low              | no reply in 90 s, five tries | | |
+
+  Parsing is a small extraction task and runs while the user waits, so the fast model is the right one. The user chose it from these numbers.
+- **Consequences:** The model is part of the parse cache key. `gemini-3.8-flash` at `low` not answering is unexplained; check it again before using it for the pick step in Phase 7.
+
+### D-046 How a request is understood and searched
+- **Status:** Accepted, 2026-10-10
+- **Decision:**
+  - **The model's reply is cleaned, never trusted.** Unknown genres and tags are dropped, known ones get their canonical spelling, years outside 1870 to the current year are dropped, a range the wrong way round is dropped, runtime must be 30 to 600 minutes, rating 0 to 10, language one of the catalog's codes. A field of the wrong type is ignored; a reply that is not an object counts as a failed parse.
+  - **Genres, years, runtime, language and rating are filters. Tags are a boost** (`RECOMMEND_WEIGHT_TAGS`, default 0.1), because 58% of the catalog has no tags and a tag filter would hide those films. `excludeGenres` and `excludeTags` are exclusions.
+  - **Too few results:** filters are loosened one at a time in this order, and each is reported in `meta.relaxed`: excluded tags, minimum rating, maximum runtime, years, and last "every genre" becomes "at least one genre". Excluded genres and language are never loosened.
+  - **"Like Inception":** the title is looked up by trigram similarity (at least 0.55, exact matches first, best-known first). The query vector moves halfway toward that film's vector, and the film itself is left out of the results. A title that matches nothing, or a film with no embedding, is ignored.
+  - **Results are filled from three sources in order:** nearest by meaning, then keyword matches on the search text, then (only if the request has a filter or tag) the best movies that pass the filters.
+  - **The response says what was understood:** `meta.parsed` holds the cleaned filters, and the web page shows them.
+- **Alternatives:** Tags as filters (as on the Browse page). Dropping genres entirely when too few match. Showing only meaning matches.
+- **Why:**
+  - The plan's relax order was tags, rating, years. Runtime was added next to rating. Genres were added last and only partly, because the model sometimes lists three genres for one request ("like The Matrix but funnier" gave Science Fiction, Action and Comedy), and no result is worse than a film with two of the three.
+  - The keyword fill exists because only 980 movies have embeddings (D-041). With filters such as "from 2011", almost no embedded film qualifies, and the rest of the list has to come from the 27,745 others.
+  - 0.55 for titles was set from measurements: "incepton" scores 0.58 against "inception" and "heat" 0.56 against "the heat", while "inception" against "interception" scores 0.53.
+- **Consequences:** Scores from the meaning search and the keyword fill are on different scales, so a list that mixes them shows meaning matches first even when a keyword match looks stronger. With full embedding coverage the fill is rarely needed. Fusing the two rankings properly is a question for Phase 9.
 
 ---
 

@@ -234,3 +234,99 @@ The keyword baseline for the same words (over the whole catalog) returns 2001: A
 Space Odyssey, Alien, Interstellar, Space Sweepers, Aliens, Teen Titans Go! To
 the Movies, The Empire Strikes Back and Cinema Paradiso: it matches the words
 "space" and "movie", and nothing about loneliness.
+
+## Understanding the request (Phase 6)
+
+From Phase 6, `POST /api/recommend` has three steps. The diagram in the Phase 5
+section still describes the embed step; this is the whole path:
+
+```
+"action movie with a twist at the end, not too old"
+  │
+  ▼
+parse    Gemini Flash-Lite reads the request and returns JSON     (cached 7 days)
+         { genres: [Action], yearFrom: 2011, tags: [twist ending],
+           searchText: "action movie with a twist ending" }
+         the reply is cleaned: anything unknown or out of range is dropped
+         fails ──> no filters, search the words as typed
+  │
+  ▼
+embed    searchText becomes a vector                              (cached 7 days)
+         "like Inception": the vector moves halfway toward that film's vector
+         fails ──> keyword search, still with the parsed filters
+  │
+  ▼
+search   among movies that pass the filters:
+           1. the 30 nearest by meaning, re-scored
+           2. keyword matches on searchText, if the list is not full
+           3. the best movies passing the filters, if it is still not full
+         fewer than `limit`? loosen one filter and search again
+```
+
+### What each part of the reply becomes
+
+| From the parse step               | Used as                                              |
+| --------------------------------- | ---------------------------------------------------- |
+| `genres`                          | Filter: the movie has every genre                    |
+| `yearFrom`, `yearTo`              | Filter on `release_year`                             |
+| `maxRuntime`, `language`, `minRating` | Filters                                          |
+| `excludeGenres`, `excludeTags`    | Exclusions: the movie has none of them               |
+| `tags`                            | A boost to the score, not a filter                   |
+| `referenceTitles`                 | Moves the query vector; the named film is left out   |
+| `searchText`                      | What is embedded, and the words for the keyword fill |
+
+Tags are a boost because 58% of the catalog has no tags at all; as a filter
+they would hide every film released after 2019.
+
+### Scoring
+
+```
+score = w_similarity * similarity + w_tags * tag_score + w_rating * rating_score
+        (1)                         (0.1)                (0.2)
+```
+
+`tag_score` is the best relevance per wanted tag, averaged over all wanted tags,
+so a movie that has one of two wanted tags gets half. A strongly tagged film
+gains up to 0.1, which is more than the usual spread in similarity among the
+nearest 30 and so is enough to reorder them.
+
+### Loosening filters
+
+If fewer than `limit` movies are found, filters are dropped one at a time, in
+this order, and the search runs again. Each one dropped is listed in
+`meta.relaxed`:
+
+1. excluded tags
+2. minimum rating
+3. maximum runtime
+4. years
+5. genres, and only from "every genre" to "at least one genre"
+
+Excluded genres and language are never loosened.
+
+### What the model gets, and what it costs
+
+The system prompt lists the 19 genres, the 47 curated tags, the current year
+and a few rules; the request goes between `<request>` tags with any angle
+brackets removed. The reply must match a JSON Schema in which genres and tags
+are enums. The prompt is `apps/api/src/llm/prompts/parse-v1.ts`.
+
+| Per uncached request  | Tokens in | Tokens out | Time          |
+| --------------------- | --------- | ---------- | ------------- |
+| Parse (Flash-Lite)    | about 505 | 60 to 110  | 1.3 to 1.6 s  |
+| Embed the search text | 10 to 20  | 0          | 0.6 to 0.7 s  |
+| Search                |           |            | 10 to 100 ms  |
+
+A repeated request costs no tokens: parse 1 ms, embed 0 ms, search 25 ms.
+
+### Measured on real requests
+
+| Request                                           | Understood as                                   | First results |
+| ------------------------------------------------- | ----------------------------------------------- | ------------- |
+| action movie with a twist at the end, not too old | Action, from 2011, twist ending                 | Sin City: A Dame to Kill For, The World's End, The Dark Knight Rises, Now You See Me 2, The Guest, Looper |
+| koi achhi suspense movie batao, 90s ki            | Thriller, 1990 to 1999, "suspenseful thriller"  | The Silence of the Lambs, The Usual Suspects, Arlington Road, The Sixth Sense, Primal Fear, Se7en |
+| something like The Matrix but funnier             | Science Fiction, Action, Comedy; funny, mind-bending; like The Matrix | Men in Black, Men in Black II, Teenage Mutant Ninja Turtles |
+
+In the first row only Sin City: A Dame to Kill For came from the meaning
+search: it is the one embedded action film from 2011 or later. The rest are
+keyword and tag matches from the whole catalog (D-041, D-046).
