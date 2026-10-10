@@ -136,6 +136,35 @@ flowchart TD
 - **Decision:** The parse step writes `searchText` in English, so Hindi and Hinglish requests ("koi achhi suspense movie batao") work.
 - **Why:** Catalog text is mostly English. A useful demo point for users in India.
 
+### D-040 Gemini models: 3.8 Flash for text, Embedding 2 at 768 dimensions
+- **Status:** Accepted, 2026-10-10
+- **Decision:** `gemini-3.8-flash` for parse and pick, with thinking at `low`. `gemini-embedding-2` for embeddings, at 768 dimensions. All four are config values (`GEMINI_TEXT_MODEL`, `GEMINI_THINKING_LEVEL`, `GEMINI_EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`). Resolves O-003 and confirms D-021.
+- **Alternatives:** `gemini-embedding-001` (older, text only, 2,048-token input, vectors need normalizing by hand). A Flash-Lite model for text.
+- **Why:** The user chose Flash and Embedding 2. Embedding 2 is the current stable model, returns unit-length vectors at 768 dimensions, and its batch endpoint reports token counts.
+- **Measured with the user's key:**
+  - `gemini-3.8-flash` rejects the `minimal` thinking level; `low` is the lowest it accepts.
+  - One small structured-output call took 5.3 seconds, and two of three attempts returned 503 ("high demand") first. Look at this again in Phase 6; a Flash-Lite model may suit the parse step better.
+  - Embedding 2 has no task-type parameter. Documents are sent as `title: {title} | text: {content}` and queries as `task: search result | query: {content}`.
+  - The SDK's `embedContent` returns one combined vector for a list of texts with this model. The REST `batchEmbedContents` endpoint returns one per text, so `llm/gemini.ts` calls that directly.
+- **Consequences:** Changing the embedding model or size means embedding the catalog again and, for the size, a migration.
+
+### D-041 The free tier allows 1,000 embedded texts a day
+- **Status:** Accepted, 2026-10-10
+- **Decision:** Stay on the free tier and build the working prototype on the 980 movies already embedded. No billing for now. Embedding the rest of the catalog is put off until the prototype works.
+- **Why:** User's choice: a working prototype first, without spending money. 980 films are enough to build and show search by meaning.
+- **Consequences:**
+  - Search by meaning (Phase 5 on) can only return the 980 embedded films. The other 27,745 are still found by full-text search and filters.
+  - The 980 are the lowest database ids, which are TMDB's oldest entries. That happens to include many famous films (The Dark Knight, Fight Club, Pulp Fiction, The Matrix; 215 of them have 5,000 or more votes), but only 334 are from 2000 or later and almost none from after 2010. Inception, for one, has no vector.
+  - Evaluation numbers in Phase 9 will describe this small set, not the full catalog.
+  - Do not run `pnpm embed` casually: it would spend the day's 1,000 requests on more movies and leave none for search queries.
+  - Any of the options below can still be taken later without code changes.
+- **Context:** Measured, not documented: after 980 movies the API answered `Quota exceeded for metric: embed_content_free_tier_requests, limit: 1000, model: gemini-embedding-2`, with a wait of about 11.5 hours. Each text in a batch counts as one request. There is also a limit of about 30,000 tokens a minute. The same daily quota is used by search queries from Phase 5 on.
+- **Options considered for embedding the rest:**
+  1. Turn on billing. The remaining 27,745 movies are about 4.7 million tokens. The pricing page lists Embedding 2 at $0.20 per million input tokens, so about $1, and the run takes about 3.5 hours at the per-minute limit (which may be higher on a paid tier).
+  2. Stay on the free tier and run `pnpm embed` once a day. 1,000 movies a day is 28 more days, and each day's run leaves no quota for search queries.
+  3. Stay on the free tier with a smaller embedded set, for example the 5,000 best-known movies in five days. Search by meaning would only cover those; the rest would be found by full-text search.
+- **Already done to soften it:** `pnpm embed` queues the best-known movies first and stops cleanly when the quota is reached, so any of the options works with the code as it is.
+
 ---
 
 ## Data
@@ -245,7 +274,7 @@ flowchart TD
 - **Consequences:** Docker is added in the deployment phase (and for CI). The plan's Phase 0 uses local services.
 
 ### D-021 768-dimension embeddings, if the model supports it
-- **Status:** Accepted, pending model check, 2026-10-10
+- **Status:** Accepted, 2026-10-10. Confirmed by D-040: `gemini-embedding-2` supports 768 dimensions.
 - **Decision:** Store embeddings at 768 dimensions.
 - **Alternatives:** 1,536 or 3,072 dimensions.
 - **Why:** Storage (about 3 KB per movie at 768 vs 12 KB at 3,072), smaller HNSW index, cheaper hosting. pgvector can only index the `vector` type up to 2,000 dimensions; higher needs `halfvec`.
@@ -315,6 +344,18 @@ flowchart TD
   2. It makes a second row impossible and gives the upsert a key to conflict on.
   3. Deleting and inserting 332,167 rows on every run would double the table with dead rows each time. With the comparison, a repeated run writes nothing at all. The result is the same as a replace. Tags with another `source` are left alone, ready for Phase 10.
 
+### D-042 How the embeddings job is built
+- **Status:** Accepted, 2026-10-10
+- **Decision:**
+  - A movie's embedding text is built by one function (`embeddings/text.ts`): title and year as the title; genres, top 10 tags, keywords, tagline and overview as labelled lines.
+  - `content_hash` is a SHA-256 of that text plus the model name and dimensions. A matching hash means the movie is skipped.
+  - One BullMQ job is one batch of 20 movies and one API request. The worker runs one batch at a time, at most `EMBED_REQUESTS_PER_MINUTE` a minute.
+  - The database, not the queue, is the record of what is done. Every `pnpm embed` clears the queue and queues the movies whose hash is missing or out of date, best-known first.
+  - A rate-limited batch goes back to the queue without using up an attempt. After three in a row, or when the API asks for a wait of more than five minutes, the run stops and says why.
+  - Exports are gzipped JSON lines keyed by `tmdb_id`, with vectors as base64 32-bit floats, so an import is exact.
+- **Why:** Checking the hash inside the worker makes every batch safe to run twice, which is what makes retries, crashes and restarts harmless. Internal ids differ between databases, so exports use `tmdb_id`.
+- **Consequences:** Only one `pnpm embed` should run at a time. The retry wrapper will not wait longer than `LLM_RETRY_MAX_MS` for a rate limit; a longer wait is handed back to the caller. (An earlier version waited as long as the API asked, which was 11 hours.)
+
 ---
 
 ## Open decisions
@@ -329,7 +370,7 @@ flowchart TD
 - **Next step:** Check counts by `original_language` at each threshold.
 
 ### O-003 Gemini models and embedding size
-- **Status:** Open
+- **Status:** Superseded by D-040, 2026-10-10
 - **Next step:** Check the current Gemini docs for the text model (fast and cheap, with structured output and adjustable thinking) and the embedding model, and whether it supports 768 output dimensions. Confirm D-021.
 
 ### O-004 Node version

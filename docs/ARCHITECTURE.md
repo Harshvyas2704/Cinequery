@@ -115,3 +115,60 @@ API's own parameterised query:
 Optional filters are written as `$n IS NULL OR column ...`. Because the
 parameter values are known when Postgres plans the query, the unused filters
 are removed and the remaining ones can use their indexes.
+
+## The LLM provider (Phase 4)
+
+Everything that talks to an LLM goes through one interface, `LlmProvider`
+(`apps/api/src/llm/types.ts`), with two methods: `generateJson` and `embed`.
+
+```
+caller ──> createLlmProvider (provider.ts) ──> a backend
+           timeout, retries, llm_calls         gemini.ts (the real API)
+                                               fake.ts   (tests)
+```
+
+- **A backend makes one attempt.** `gemini.ts` is the only file that imports
+  the Gemini SDK; an ESLint rule rejects that import anywhere else. `fake.ts`
+  returns scripted replies and can be told to time out, answer 429 or 5xx, or
+  return invalid JSON.
+- **The wrapper adds what every call needs:**
+  - A timeout, enforced with an `AbortController` and a race, so a backend that
+    ignores the abort still times out.
+  - Retries with exponential backoff and jitter, on 429 and 5xx only. A 400, a
+    timeout or invalid output is not retried. If the API asks for a wait longer
+    than `LLM_RETRY_MAX_MS`, the error goes back to the caller instead.
+  - One row in `llm_calls` per attempt: stage, model, prompt version, tokens,
+    latency and status.
+- **Replies are untrusted.** `generateJson` returns parsed JSON as `unknown`;
+  the caller validates it with Zod.
+
+## Embeddings (Phase 4)
+
+```
+pnpm embed
+  1. load every movie's text and hash; keep those with no vector or an old hash
+  2. queue them in batches of 20, best-known first          (BullMQ, Redis)
+  3. worker, one batch at a time, at most 7 a minute:
+       load the batch, skip movies whose hash is already stored
+       one API request for the rest                          (Gemini)
+       store the vectors in one statement                    (Postgres)
+```
+
+- **What is embedded** (`embeddings/text.ts`): the title and year as the title,
+  then genres, the ten most relevant tags, keywords, tagline and overview. About
+  177 tokens a movie.
+- **Skipping finished work:** `content_hash` covers the text, the model and the
+  dimensions. If the stored hash matches, the movie is skipped without an API
+  call. This check runs inside the worker, so a batch that is retried, queued
+  twice or interrupted by a crash never costs a second request.
+- **Rate limits:** a rate-limited batch returns to the queue without using an
+  attempt, and the queue pauses for as long as the API asks. Three in a row, or
+  a requested wait above five minutes, ends the run with the API's message;
+  the next run picks up from the database.
+- **Search:** vectors are 768-dimension unit vectors in `movie_embeddings`,
+  with an HNSW index on cosine distance (`embedding <=> query`). Queries and
+  documents are embedded with different prefixes so that a question lands near
+  the films that answer it.
+- **Moving them:** `pnpm embed:export` writes
+  `exports/embeddings-<model>-<dimensions>.jsonl.gz`, keyed by `tmdb_id`;
+  `pnpm embed:import` loads it into another database without calling the API.

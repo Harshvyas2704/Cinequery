@@ -2,4 +2,7 @@ packages:
   - apps/*
   - packages/*
 allowBuilds:
+  '@google/genai': false
   esbuild: true
+  msgpackr-extract: false
+  protobufjs: false

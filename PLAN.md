@@ -537,7 +537,7 @@ Done when:
 
 Goal: every catalog movie has an embedding, produced by a queued job that survives rate limits and crashes.
 
-Before starting: resolve O-003 with the user (models and dimensions) and confirm D-021.
+Models and dimensions: `gemini-3.8-flash` and `gemini-embedding-2` at 768 (D-040). The free tier allows 1,000 embedded texts a day, so the prototype is built on the 980 movies embedded so far (D-041).
 
 #### 4.1 Provider interface
 
@@ -555,6 +555,8 @@ interface LlmProvider {
   }): Promise<{ data: unknown; usage: Usage; latencyMs: number }>;
   embed(input: {
     texts: string[];
+    kind: "document" | "query"; // Embedding 2 embeds the two differently (D-040)
+    titles?: string[]; // for documents
     timeoutMs: number;
     stage: string;
   }): Promise<{ vectors: number[][]; usage: Usage; latencyMs: number }>;

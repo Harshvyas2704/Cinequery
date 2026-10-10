@@ -11,10 +11,16 @@
     "test": "vitest run",
     "test:unit": "vitest run --exclude '**/*.int.test.ts'",
     "db:migrate": "tsx src/db/migrate.ts",
-    "ingest": "tsx src/ingest/cli.ts"
+    "ingest": "tsx src/ingest/cli.ts",
+    "embed": "tsx src/embeddings/cli.ts run",
+    "embed:status": "tsx src/embeddings/cli.ts status",
+    "embed:export": "tsx src/embeddings/cli.ts export",
+    "embed:import": "tsx src/embeddings/cli.ts import"
   },
   "dependencies": {
     "@cinequery/shared": "workspace:*",
+    "@google/genai": "^2.28.0",
+    "bullmq": "^6.3.12",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "helmet": "^8.3.0",
