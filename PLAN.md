@@ -613,7 +613,7 @@ Tasks:
   - Embed it; cache the vector in Redis (binary or base64, not a JSON array) keyed by `hash(model + dims + normalized query)` with a TTL.
   - Vector search, top 30; score = similarity, tag boost and weighted rating with weights from config.
   - If embedding fails, fall back to Phase 3 search.
-- Redis memory limit with LRU eviction (`maxmemory` and `allkeys-lru`) documented in the README.
+- Redis memory limit with LRU eviction (`maxmemory` and `volatile-lru`, D-043) documented in the README.
 - Web: one text box, example chips, results grid, and a "How this was found" panel showing stages and timings.
 
 Done when:

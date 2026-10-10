@@ -19,7 +19,7 @@ export type SearchSettings = {
 
 type Queryable = Pick<pg.Pool, "query">;
 
-type SummaryRow = {
+export type SummaryRow = {
   id: number;
   title: string;
   overview: string;
@@ -32,11 +32,11 @@ type SummaryRow = {
   poster_path: string | null;
 };
 
-const SUMMARY_COLUMNS = `
+export const SUMMARY_COLUMNS = `
   m.id, m.title, m.overview, m.release_year, m.runtime_minutes, m.genres, m.language,
   m.vote_average::float8 AS vote_average, m.vote_count, m.poster_path`;
 
-function toSummary(row: SummaryRow, posterBaseUrl: string): MovieSummary {
+export function toSummary(row: SummaryRow, posterBaseUrl: string): MovieSummary {
   return {
     id: row.id,
     title: row.title,

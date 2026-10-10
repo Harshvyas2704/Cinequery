@@ -91,6 +91,20 @@ const envSchema = z.object({
   LLM_MAX_RETRIES: wholeNumber(0, 10).default(3),
   LLM_RETRY_BASE_MS: wholeNumber(1, 60_000).default(1000),
   LLM_RETRY_MAX_MS: wholeNumber(1, 600_000).default(30_000),
+  // While a user is waiting, fail fast and fall back instead of retrying for long.
+  LLM_ONLINE_MAX_RETRIES: wholeNumber(0, 5).default(1),
+  LLM_ONLINE_RETRY_BASE_MS: wholeNumber(1, 10_000).default(200),
+  LLM_ONLINE_RETRY_MAX_MS: wholeNumber(1, 30_000).default(1000),
+
+  // POST /api/recommend (docs/ARCHITECTURE.md).
+  // How many nearest movies are taken from the vector index before re-scoring.
+  RECOMMEND_CANDIDATES: wholeNumber(1, 200).default(30),
+  RECOMMEND_WEIGHT_SIMILARITY: weight().default(1),
+  RECOMMEND_WEIGHT_RATING: weight().default(0.2),
+  EMBED_QUERY_TIMEOUT_MS: wholeNumber(100, 60_000).default(4000),
+  // How long a request's embedding is kept in Redis. It never goes stale for a
+  // given model, so this only bounds memory. Default: 7 days.
+  QUERY_EMBEDDING_TTL_SECONDS: wholeNumber(1, 31_536_000).default(604_800),
 
   // The embeddings job (`pnpm embed`).
   EMBED_BATCH_SIZE: wholeNumber(1, 100).default(20),
@@ -125,6 +139,14 @@ export type Config = {
     embeddingModel: string;
     embeddingDimensions: number;
     retry: { maxRetries: number; baseDelayMs: number; maxDelayMs: number };
+    /** Retries for calls made while a user waits. */
+    onlineRetry: { maxRetries: number; baseDelayMs: number; maxDelayMs: number };
+  };
+  recommend: {
+    candidates: number;
+    weights: { similarity: number; rating: number };
+    embedTimeoutMs: number;
+    embeddingCacheTtlSeconds: number;
   };
   embed: {
     batchSize: number;
@@ -193,6 +215,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         baseDelayMs: parsed.LLM_RETRY_BASE_MS,
         maxDelayMs: parsed.LLM_RETRY_MAX_MS,
       },
+      onlineRetry: {
+        maxRetries: parsed.LLM_ONLINE_MAX_RETRIES,
+        baseDelayMs: parsed.LLM_ONLINE_RETRY_BASE_MS,
+        maxDelayMs: parsed.LLM_ONLINE_RETRY_MAX_MS,
+      },
+    },
+    recommend: {
+      candidates: parsed.RECOMMEND_CANDIDATES,
+      weights: {
+        similarity: parsed.RECOMMEND_WEIGHT_SIMILARITY,
+        rating: parsed.RECOMMEND_WEIGHT_RATING,
+      },
+      embedTimeoutMs: parsed.EMBED_QUERY_TIMEOUT_MS,
+      embeddingCacheTtlSeconds: parsed.QUERY_EMBEDDING_TTL_SECONDS,
     },
     embed: {
       batchSize: parsed.EMBED_BATCH_SIZE,

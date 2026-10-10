@@ -55,14 +55,36 @@ a {
   color: var(--accent);
 }
 
-h1 {
-  font-size: 1.5rem;
-  margin: 0 0 1.25rem;
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem 1.5rem;
+  margin-bottom: 1.25rem;
 }
 
-h1 a {
-  color: inherit;
+h1 {
+  font-size: 1.5rem;
+  margin: 0;
+}
+
+nav {
+  display: flex;
+  gap: 1.25rem;
+}
+
+nav a {
+  color: var(--muted);
   text-decoration: none;
+  font-weight: 600;
+  padding-bottom: 0.15rem;
+  border-bottom: 2px solid transparent;
+}
+
+nav a[aria-current="page"] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
 }
 
 h2 {
@@ -207,6 +229,75 @@ select {
   background: var(--chip-on-bg);
   border-color: var(--accent);
   font-weight: 600;
+}
+
+/* Recommend page */
+
+.examples {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.how {
+  margin: 1.1rem 0 0.9rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.6rem 0.9rem;
+  font-size: 0.9rem;
+}
+
+.how summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.how-summary {
+  margin-left: 0.6rem;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.how table {
+  width: 100%;
+  margin-top: 0.6rem;
+  border-collapse: collapse;
+}
+
+.how th,
+.how td {
+  text-align: left;
+  padding: 0.4rem 0.75rem 0.4rem 0;
+  border-top: 1px solid var(--border);
+  font-weight: 400;
+  vertical-align: top;
+}
+
+.how thead th {
+  border-top: none;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.how tbody th {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.how .number {
+  text-align: right;
+  white-space: nowrap;
+  padding-right: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.how tr.problem td:nth-child(2) {
+  color: var(--error);
 }
 
 /* Results */

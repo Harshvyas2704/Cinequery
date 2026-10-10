@@ -1,15 +1,31 @@
 import { pino } from "pino";
 import { createApp } from "./app.js";
+import { createQueryEmbeddingCache } from "./cache/queryEmbeddings.js";
 import { createRedis } from "./cache/redis.js";
 import { loadConfigOrExit } from "./config/env.js";
 import { createPool } from "./db/pool.js";
+import { createGeminiProvider } from "./llm/index.js";
 
 const config = loadConfigOrExit();
 const logger = pino({ level: config.logLevel });
 
 const pool = createPool(config.databaseUrl, logger);
 const redis = createRedis(config.redisUrl, logger);
-const app = createApp({ config, pool, redis, logger });
+
+// Without a key the API still runs: search works by keywords only (D-011).
+const llm = config.llm.apiKey
+  ? createGeminiProvider(config, pool, logger, config.llm.onlineRetry)
+  : null;
+if (!llm) logger.warn("GEMINI_API_KEY is not set: search by meaning is off");
+
+const queryEmbeddingCache = createQueryEmbeddingCache(redis, {
+  model: config.llm.embeddingModel,
+  dimensions: config.llm.embeddingDimensions,
+  ttlSeconds: config.recommend.embeddingCacheTtlSeconds,
+  logger,
+});
+
+const app = createApp({ config, pool, redis, llm, queryEmbeddingCache, logger });
 
 const server = app.listen(config.port, () => {
   logger.info(`API listening on http://localhost:${config.port}`);
