@@ -1,0 +1,59 @@
+# ---------- Dependencies ----------
+node_modules/
+.pnpm-store/
+
+# ---------- Secrets ----------
+# Real env files stay local. Only the example (no real values) is committed.
+.env
+.env.*
+!.env.example
+
+# ---------- Data ----------
+# Raw downloads (TMDB, MovieLens) and generated Parquet files are large
+# and can be rebuilt with scripts/prepare-data.sql.
+data/
+*.duckdb
+*.duckdb.wal
+*.parquet
+*.csv.gz
+*.zip
+
+# Embedding exports from `pnpm embed:export` (large, rebuildable)
+exports/
+
+# ---------- Build output ----------
+dist/
+build/
+*.tsbuildinfo
+.vite/
+
+# ---------- Tests ----------
+coverage/
+test-results/
+playwright-report/
+blob-report/
+
+# ---------- Logs ----------
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# ---------- Claude Code ----------
+# settings.json (shared rules, like the git deny list) IS committed.
+# settings.local.json holds personal overrides and stays local.
+.claude/settings.local.json
+
+# ---------- Editors ----------
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db
+
+# ---------- PLAN ------------
+GITPLAN.md

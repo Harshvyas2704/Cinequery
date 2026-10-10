@@ -1,0 +1,27 @@
+{
+  "name": "cinequery",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.8.1",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "pnpm build:shared && pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "build:shared": "pnpm --filter @cinequery/shared build",
+    "test": "pnpm build:shared && pnpm -r test",
+    "test:unit": "pnpm build:shared && pnpm -r test:unit",
+    "lint": "eslint .",
+    "typecheck": "pnpm build:shared && pnpm -r typecheck",
+    "db:migrate": "pnpm --filter @cinequery/api db:migrate"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.12.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.13.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.1"
+  }
+}
