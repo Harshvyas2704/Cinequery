@@ -58,6 +58,24 @@ const envSchema = z.object({
     .min(0, { error: message("a number between 0 and 1") })
     .max(1, { error: message("a number between 0 and 1") })
     .default(0.5),
+  // Ranking weights for search (docs/ARCHITECTURE.md). Each score is 0 to 1 before weighting.
+  SEARCH_WEIGHT_TEXT: z.coerce
+    .number({ error: message("a number from 0 to 100") })
+    .min(0, { error: message("a number from 0 to 100") })
+    .max(100, { error: message("a number from 0 to 100") })
+    .default(1),
+  SEARCH_WEIGHT_TAGS: z.coerce
+    .number({ error: message("a number from 0 to 100") })
+    .min(0, { error: message("a number from 0 to 100") })
+    .max(100, { error: message("a number from 0 to 100") })
+    .default(1),
+  SEARCH_WEIGHT_RATING: z.coerce
+    .number({ error: message("a number from 0 to 100") })
+    .min(0, { error: message("a number from 0 to 100") })
+    .max(100, { error: message("a number from 0 to 100") })
+    .default(1),
+  // Poster URLs are this prefix plus the movie's poster_path.
+  TMDB_IMAGE_BASE_URL: url("an https:// URL", /^https$/).default("https://image.tmdb.org/t/p/w342"),
 });
 
 export type Config = {
@@ -72,6 +90,10 @@ export type Config = {
   dataDir: string;
   ingestBatchSize: number;
   ratingMinVotesPercentile: number;
+  search: {
+    weights: { text: number; tags: number; rating: number };
+    posterBaseUrl: string;
+  };
 };
 
 /** Thrown when the environment is missing or has invalid variables. Never contains values. */
@@ -113,6 +135,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dataDir: parsed.DATA_DIR,
     ingestBatchSize: parsed.INGEST_BATCH_SIZE,
     ratingMinVotesPercentile: parsed.RATING_MIN_VOTES_PERCENTILE,
+    search: {
+      weights: {
+        text: parsed.SEARCH_WEIGHT_TEXT,
+        tags: parsed.SEARCH_WEIGHT_TAGS,
+        rating: parsed.SEARCH_WEIGHT_RATING,
+      },
+      posterBaseUrl: parsed.TMDB_IMAGE_BASE_URL.replace(/\/+$/, ""),
+    },
   };
 }
 

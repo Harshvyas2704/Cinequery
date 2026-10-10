@@ -4,8 +4,14 @@ import type { Redis } from "ioredis";
 import { pino } from "pino";
 import { type AppDeps, createApp } from "../src/app.js";
 import { type Config, loadConfig, loadEnvFile } from "../src/config/env.js";
+import type { HealthDeps } from "../src/routes/health.js";
 
 export const silentLogger = pino({ level: "silent" });
+
+export const testSearch = {
+  weights: { text: 1, tags: 1, rating: 1 },
+  posterBaseUrl: "https://img.test/w342",
+};
 
 /** Config for integration tests. Refuses to run without a separate test database. */
 export function loadTestConfig(): Config & { testDatabaseUrl: string } {
@@ -32,13 +38,17 @@ export async function waitForRedis(redis: Redis, timeoutMs = 2000): Promise<void
 }
 
 /** Starts the app on a free port and returns its base URL. */
-export async function startApp(
-  deps: Omit<AppDeps, "logger" | "config"> & { config?: AppDeps["config"] },
-): Promise<{ url: string; close: () => Promise<void> }> {
+export async function startApp(deps: {
+  // Health tests pass a fake with only the query they need; other tests pass a real pool.
+  pool: HealthDeps["pool"] | AppDeps["pool"];
+  redis: AppDeps["redis"];
+  config?: AppDeps["config"];
+}): Promise<{ url: string; close: () => Promise<void> }> {
   const app = createApp({
     logger: silentLogger,
-    config: { webOrigin: "http://localhost:5173", healthCheckTimeoutMs: 200 },
+    config: { webOrigin: "http://localhost:5173", healthCheckTimeoutMs: 200, search: testSearch },
     ...deps,
+    pool: deps.pool as AppDeps["pool"],
   });
   const server = app.listen(0);
   await new Promise((resolve) => server.once("listening", resolve));

@@ -33,6 +33,10 @@ describe("loadConfig", () => {
       dataDir: expect.stringMatching(/data[/\\]clean$/),
       ingestBatchSize: 500,
       ratingMinVotesPercentile: 0.5,
+      search: {
+        weights: { text: 1, tags: 1, rating: 1 },
+        posterBaseUrl: "https://image.tmdb.org/t/p/w342",
+      },
     });
   });
 
