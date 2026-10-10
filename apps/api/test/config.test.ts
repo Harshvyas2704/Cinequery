@@ -44,6 +44,13 @@ describe("loadConfig", () => {
         embeddingModel: "gemini-embedding-2",
         embeddingDimensions: 768,
         retry: { maxRetries: 3, baseDelayMs: 1000, maxDelayMs: 30000 },
+        onlineRetry: { maxRetries: 1, baseDelayMs: 200, maxDelayMs: 1000 },
+      },
+      recommend: {
+        candidates: 30,
+        weights: { similarity: 1, rating: 0.2 },
+        embedTimeoutMs: 4000,
+        embeddingCacheTtlSeconds: 604800,
       },
       embed: {
         batchSize: 20,

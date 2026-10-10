@@ -38,16 +38,35 @@ export async function waitForRedis(redis: Redis, timeoutMs = 2000): Promise<void
 }
 
 /** Starts the app on a free port and returns its base URL. */
+export const testAppConfig: AppDeps["config"] = {
+  webOrigin: "http://localhost:5173",
+  healthCheckTimeoutMs: 200,
+  search: testSearch,
+  recommend: {
+    candidates: 30,
+    weights: { similarity: 1, rating: 0.2 },
+    embedTimeoutMs: 500,
+    embeddingCacheTtlSeconds: 60,
+  },
+  llm: { embeddingModel: "fake-embedding" },
+};
+
+const noCache: AppDeps["queryEmbeddingCache"] = { get: async () => null, set: async () => {} };
+
 export async function startApp(deps: {
   // Health tests pass a fake with only the query they need; other tests pass a real pool.
   pool: HealthDeps["pool"] | AppDeps["pool"];
   redis: AppDeps["redis"];
   config?: AppDeps["config"];
+  llm?: AppDeps["llm"];
+  queryEmbeddingCache?: AppDeps["queryEmbeddingCache"];
 }): Promise<{ url: string; close: () => Promise<void> }> {
   const app = createApp({
     logger: silentLogger,
-    config: { webOrigin: "http://localhost:5173", healthCheckTimeoutMs: 200, search: testSearch },
+    llm: null,
+    queryEmbeddingCache: noCache,
     ...deps,
+    config: deps.config ?? testAppConfig,
     pool: deps.pool as AppDeps["pool"],
   });
   const server = app.listen(0);

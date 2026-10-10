@@ -165,6 +165,14 @@ flowchart TD
   3. Stay on the free tier with a smaller embedded set, for example the 5,000 best-known movies in five days. Search by meaning would only cover those; the rest would be found by full-text search.
 - **Already done to soften it:** `pnpm embed` queues the best-known movies first and stops cleanly when the quota is reached, so any of the options works with the code as it is.
 
+### D-043 Semantic search: nearest 30 by meaning, nudged by rating, keywords as the fallback
+- **Status:** Accepted, 2026-10-10
+- **Decision:** `POST /api/recommend` embeds the normalized request, takes the 30 nearest movies from the vector index, and orders them by `similarity + 0.2 * rating_score` (both weights from config). Tags are not part of the score yet, because nothing knows which tags a request wants until the parse step in Phase 6. If the embedding call fails or times out, or no movie has a vector, the keyword search from Phase 3 answers instead and the stage is marked `fallback`. Without an API key the embed stage is `skipped`.
+- **Alternatives:** Equal weights for similarity and rating, as in the keyword search (D-039).
+- **Why:** Cosine similarities of the nearest 30 sit within about 0.05 of each other, while rating scores differ by up to 0.3. At equal weights the rating would decide the order and meaning would only pick the candidates. At 0.2 one full star of rating is worth 0.02, enough to lift 2001: A Space Odyssey above Silent Running for "space movie about loneliness" without burying the closest match.
+- **Consequences:** While a user waits, the embedding call gets one quick retry and a 4-second timeout, then the fallback (`LLM_ONLINE_*`, `EMBED_QUERY_TIMEOUT_MS`). Batch jobs keep the longer retry settings. A failed embedding is not cached, so the next request tries again.
+- **Revisit:** In Phase 9, against the evaluation set.
+
 ---
 
 ## Data
@@ -355,6 +363,13 @@ flowchart TD
   - Exports are gzipped JSON lines keyed by `tmdb_id`, with vectors as base64 32-bit floats, so an import is exact.
 - **Why:** Checking the hash inside the worker makes every batch safe to run twice, which is what makes retries, crashes and restarts harmless. Internal ids differ between databases, so exports use `tmdb_id`.
 - **Consequences:** Only one `pnpm embed` should run at a time. The retry wrapper will not wait longer than `LLM_RETRY_MAX_MS` for a rate limit; a longer wait is handed back to the caller. (An earlier version waited as long as the API asked, which was 11 hours.)
+
+### D-044 Redis: cache entries expire, and eviction is `volatile-lru`
+- **Status:** Accepted, 2026-10-10
+- **Decision:** A request's embedding is cached in Redis as raw 32-bit floats (3 KB at 768 dimensions) under a key made from the model, the dimensions and the normalized request, with a 7-day expiry. The README recommends `maxmemory 256mb` and `maxmemory-policy volatile-lru`.
+- **Alternatives:** `allkeys-lru`, as the plan first said.
+- **Why:** The same Redis also holds the BullMQ queue. `allkeys-lru` may evict any key, including queued jobs. `volatile-lru` evicts only keys with an expiry, which is exactly the cache. An embedding never goes stale for a given model, so the expiry is there to make the key evictable and bound memory, not for correctness.
+- **Consequences:** Every cache key must be written with an expiry, or it can never be evicted. BullMQ logs a warning unless the policy is `noeviction`; with `volatile-lru` its keys are still safe. The cache is optional: if Redis is down, a read is a miss and a write is skipped.
 
 ---
 

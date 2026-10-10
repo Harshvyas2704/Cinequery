@@ -10,7 +10,7 @@ The plan is in `PLAN.md`; the reasons behind choices are in `DECISIONS.md`.
 - [x] Phase 2: Ingestion into Postgres
 - [x] Phase 3: Baseline search without AI
 - [x] Phase 4: LLM provider and embeddings pipeline (prototype scope: 980 of 28,725 movies embedded, D-041)
-- [ ] Phase 5: Semantic search
+- [x] Phase 5: Semantic search
 - [ ] Phase 6: Query understanding (parse)
 - [ ] Phase 7: Pick, reasons and streaming
 - [ ] Phase 8: Production concerns
@@ -405,3 +405,63 @@ search queries also need.
   and exits when the queue is empty.
 - Prompt files in `llm/prompts/`: they arrive with the parse and pick prompts
   in Phases 6 and 7.
+
+## Phase 5: Semantic search
+
+Status on 2026-10-10: done, on the 980 embedded movies (D-041).
+
+### Built
+
+- `POST /api/recommend`: normalize the request, embed it (cached in Redis),
+  take the 30 nearest movies by vector, re-score with the weighted rating.
+  Falls back to keyword search when the embedding fails. Described in
+  `docs/ARCHITECTURE.md`.
+- Shared request and response schemas, including `meta.stages` and
+  `meta.cached`.
+- The API now creates the Gemini provider at start, with quick retries. With no
+  `GEMINI_API_KEY` it still starts and searches by keywords.
+- Web: the home page is now one text box with example requests, results, and a
+  "How this was found" panel listing each step, what happened and how long it
+  took. The filter page from Phase 3 moved to "Browse" (`#browse`).
+- README: how to set a Redis memory limit.
+
+### Checked
+
+| Check                                                 | Result                                         |
+| ----------------------------------------------------- | ---------------------------------------------- |
+| `pnpm lint`, `pnpm typecheck`, `pnpm build`           | Pass                                           |
+| `pnpm test`                                           | 160 tests pass (17 shared, 129 API, 14 web)    |
+| Cache hit on the second identical request             | Pass: one embedding call for two requests      |
+| Fallback when embedding fails or times out            | Pass: keyword results, no error                |
+| Response matches the shared schema                    | Pass                                           |
+| Real API: "space movie about loneliness"              | Solaris, 2001: A Space Odyssey, Lost in Translation, Contact |
+| Real API: same request again                          | `cached: true`, embed 0 ms                     |
+| Recommend page in a browser                           | Checked with headless Chrome screenshots       |
+
+Only one request was sent through the real API end to end, because today's
+embedding quota was nearly used up by Phase 4. The other example requests were
+checked directly against the vectors in Phase 4.
+
+### Decided
+
+- Scoring and fallbacks for search by meaning (D-043).
+- Redis cache format and `volatile-lru` eviction instead of `allkeys-lru` (D-044).
+
+### Things to know for later phases
+
+- **Meaning search only sees 980 films**, and almost none after 2010. A request
+  for something recent gets the nearest older films, not an empty list.
+- **Each new request costs one of the day's 1,000 embedding calls.** Repeats are
+  free for 7 days.
+- The example chip "dark crime story with a twist" needs Phase 6 to work well:
+  for now "twist" is only matched by meaning, not by the twist tag.
+- Your local Redis has no memory limit set. The README has the two commands; I
+  did not change your Redis settings.
+
+### Deferred
+
+- Tag boost in the score: needs the parse step (Phase 6).
+- Caching the final result, not just the embedding: with the pick step (Phase 7).
+- Request ids from an `x-request-id` header, rate limits and the token budget:
+  Phase 8.
+- Browser tests of the page. The panel's wording logic has unit tests.

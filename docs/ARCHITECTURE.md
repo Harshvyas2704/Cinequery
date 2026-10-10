@@ -172,3 +172,65 @@ pnpm embed
 - **Moving them:** `pnpm embed:export` writes
   `exports/embeddings-<model>-<dimensions>.jsonl.gz`, keyed by `tmdb_id`;
   `pnpm embed:import` loads it into another database without calling the API.
+
+## Search by meaning (Phase 5)
+
+`POST /api/recommend` takes `{ "query": "...", "limit": 8 }` and answers with
+movies, a score each, and a record of how the answer was found
+(`apps/api/src/recommend/pipeline.ts`).
+
+```
+request
+  │  normalize: trim, lower case, single spaces
+  ▼
+embed ── in Redis? ── yes ──────────────────────────┐  (meta.cached = true)
+  │ no                                              │
+  │ Gemini, 4 s timeout, one retry                  │
+  │   ok: store in Redis for 7 days ────────────────┤
+  │   fails ──> keyword search (Phase 3)            │
+  ▼                                                 ▼
+search: the 30 nearest vectors (HNSW, cosine), re-scored, best `limit` returned
+        none found ──> keyword search (Phase 3)
+```
+
+### Scoring
+
+```
+score = w_similarity * similarity + w_rating * rating_score
+```
+
+- `similarity` is the cosine similarity between the request and the movie, 0 to
+  1. In practice the nearest 30 are within about 0.05 of each other.
+- `rating_score` is the weighted rating divided by 10, as in the keyword search.
+- The defaults are 1 and 0.2 (`RECOMMEND_WEIGHT_SIMILARITY`,
+  `RECOMMEND_WEIGHT_RATING`), so meaning decides and the rating breaks near
+  ties. The reasoning is in D-043.
+
+### The response's `meta`
+
+Every step adds an entry to `meta.stages` with its name, time and status:
+
+| Situation                          | `embed`    | `search`   | Results come from |
+| ---------------------------------- | ---------- | ---------- | ----------------- |
+| Normal                             | `ok`       | `ok`       | meaning           |
+| Same request asked before          | `ok`, 0 ms | `ok`       | meaning, `cached: true` |
+| Embedding fails or times out       | `fallback` | `ok`       | keywords          |
+| No API key configured              | `skipped`  | `ok`       | keywords          |
+| No movie has a vector              | `ok`       | `fallback` | keywords          |
+
+The client never gets an error because of the LLM.
+
+### Measured
+
+For "space movie about loneliness" on the 980 embedded films: Solaris, 2001: A
+Space Odyssey, Lost in Translation, Contact, Silent Running, Stalker.
+
+| Request                 | Embed  | Search |
+| ----------------------- | ------ | ------ |
+| First time              | 879 ms | 34 ms  |
+| Again, from the cache   | 0 ms   | 9 ms   |
+
+The keyword baseline for the same words (over the whole catalog) returns 2001: A
+Space Odyssey, Alien, Interstellar, Space Sweepers, Aliens, Teen Titans Go! To
+the Movies, The Empire Strikes Back and Cinema Paradiso: it matches the words
+"space" and "movie", and nothing about loneliness.

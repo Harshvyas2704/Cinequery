@@ -62,7 +62,12 @@ export function SearchPage() {
   useEffect(() => {
     const controller = new AbortController();
     moreRequest.current?.abort();
-    window.history.replaceState(null, "", key ? `?${key}` : window.location.pathname);
+    // Keep the #browse part, or a reload would open the home page.
+    window.history.replaceState(
+      null,
+      "",
+      (key ? `?${key}` : window.location.pathname) + window.location.hash,
+    );
 
     searchMovies(filters, 0, controller.signal)
       .then((page) => setOutcome({ key, results: page.results, total: page.total, error: null }))
