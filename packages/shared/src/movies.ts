@@ -53,6 +53,8 @@ export const errorResponseSchema = z.object({
     code: z.string(),
     message: z.string(),
     details: z.array(z.object({ field: z.string(), message: z.string() })).optional(),
+    /** The x-request-id of the failed request, to quote when reporting a problem. */
+    requestId: z.string().optional(),
   }),
 });
 
@@ -84,7 +86,8 @@ const year = (name: string) =>
 
 /** Query parameters of GET /api/movies/search, as they arrive (all strings). */
 export const searchQuerySchema = z
-  .object({
+  // Strict: a parameter that is not listed here is refused, not ignored.
+  .strictObject({
     q: z
       .string()
       .trim()

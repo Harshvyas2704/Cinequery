@@ -238,6 +238,50 @@ flowchart TD
   - `EventSource` only sends GET requests. The page reads the stream from `fetch` with a small parser of its own (`apps/web/src/sse.ts`).
 - **Consequences:** An uncached request costs about 3,600 tokens, of which the pick is about 3,000. `llm_calls.status` has one more value. A cancelled call may still be billed by the provider; its token count is unknown and stored as null.
 
+### D-049 Production limits: request ids, rate limits, token budget, shutdown, stats
+- **Status:** Accepted, 2026-10-10
+- **Decision:**
+  - **Request id:** every request has one (`x-request-id`). An id sent by the caller is kept if it is 8 to 64 letters, digits, `.`, `_` or `-`; otherwise a new UUID is used. It is in every log line, in `llm_calls`, in `request_log`, in the response header and in error bodies.
+  - **Rate limit:** a sliding window per client IP in Redis (a sorted set, updated by one Lua script). Defaults: 20 recommend requests and 120 other API requests per 60 seconds. Over the limit: 429 with `Retry-After`. The health check is not limited. The client IP comes from `X-Forwarded-For` only when `TRUST_PROXY_HOPS` is above 0.
+  - **Token budget:** tokens used by the API process are counted per UTC day in Redis. Defaults: soft 800,000, hard 1,000,000 (the user chose these). From the soft limit on the pick step is skipped; from the hard limit on no LLM call is made. Cached parse results, embeddings and picks are still used at any level. The response says so in `meta.budget`.
+  - **Concurrency:** at most `LLM_MAX_CONCURRENT` (default 4) LLM calls run at once in a process; the rest wait in line, and the wait counts toward the call's timeout.
+  - **When Redis is down:** the rate limit lets requests through; the budget keeps counting in the process's memory.
+  - **Input:** unknown fields and unknown search parameters are refused with 400; a body over 10 KB with 413.
+  - **Shutdown:** on SIGTERM or SIGINT the API stops accepting connections, lets open requests finish for up to 10 seconds, then closes Postgres and Redis. The worker finishes its job first.
+  - **Request log:** one row per recommend request in the new table `request_log` (migration 0005): route, outcome, cached, result count, total time and the status and time of each step. The request text is not stored. The user chose a table over Redis counters.
+  - **Stats:** `GET /api/stats` needs `Authorization: Bearer <ADMIN_TOKEN>`; without a configured token the route does not exist. Numbers are since midnight UTC.
+  - **Retention:** a new process, `pnpm worker`, runs a BullMQ job every day at 03:15 UTC that deletes `llm_calls` and `request_log` rows older than 30 days (D-024).
+  - **Logs:** the `Authorization`, `Cookie` and `x-goog-api-key` request headers are blanked before a request is logged.
+- **Alternatives:** A fixed-window counter for rate limits. Refusing requests when Redis is down. Counting the budget from `llm_calls` in Postgres. Running retention inside the API process.
+- **Why:**
+  - A fixed window lets a client send twice the limit around the turn of a window; the sliding window never allows more than the limit in any 60 seconds.
+  - Failing open on the rate limit matches D-029 (Redis is optional). It is acceptable because cost is still capped by the budget, which does not depend on Redis, and by the concurrency limit.
+  - The budget is in tokens because tokens are what a paid tier bills. **On the free tier nothing is billed; the real ceiling there is the provider's requests-per-day and per-minute quota, which I could not read:** Google shows it only in AI Studio (https://aistudio.google.com/rate-limit). When that quota is reached the API answers 429 and every step falls back (D-011), so a free key cannot run up a cost either way.
+  - A separate worker process keeps scheduled work out of the API, which may run as several copies; the job schedule has a fixed id, so starting several workers does not run the job several times.
+- **Consequences:**
+  - Embedding batches (`pnpm embed`) do not count toward the budget; they have their own rate limit. `GET /api/stats` shows them under `llm.byStage` as `embed_batch`.
+  - A call that times out while waiting for a free slot is logged in `llm_calls` as `timeout` although nothing was sent.
+  - With `TRUST_PROXY_HOPS=0` behind a proxy, every user shares the proxy's IP and one rate limit. It must be set for deployment (Phase 11).
+  - `llm_calls` and `request_log` share a request id but have no foreign key.
+
+### D-050 How quality is measured
+- **Status:** Accepted, 2026-10-10
+- **Decision:**
+  - **Four modes, each adding one step:** `fulltext` (keyword search on the words as typed), `semantic` (plus the embedding), `parsed` (plus the parse step), `full` (plus the pick step). The pipeline takes a list of steps to leave out; it is not reachable over HTTP.
+  - **Every check is computed from the database row of a returned movie**, never judged by a person or a model: genres, years, runtime, language, rating, curated tags, and lists of movies by TMDB id.
+  - **Measures:** constraint pass rate (share of returned movies that meet every constraint of the query, averaged over the queries that have constraints); hit rate (share of the queries with expected movies that returned at least one); tag match rate (share of returned movies with one of the wanted tags); spoiler check failures (reasons containing a listed phrase); fallbacks; latency p50 and p95; tokens per query. An empty answer scores 0, not "not applicable".
+  - **Nothing is cached during a run**, so tokens and latency are those of a first-time request. The run calls the pipeline directly, not the HTTP API, so the rate limit does not apply; its tokens are added to the API's daily budget.
+  - **A run stops and saves nothing when three queries in a row have a failed LLM step.** A run with `--only` is printed but not saved.
+  - The code lives in `apps/api/src/eval`, not in `eval/run.ts` as the plan said, so it is typechecked, linted and tested with the API. The queries and results stay in `eval/`.
+  - Expected movies are written as `{ tmdbId, title }` (`anyOfMovies`), not bare ids, so the list can be reviewed. `pnpm eval --check` verifies each id and title against the catalog.
+- **Alternatives:** An LLM as judge of relevance. Calling the HTTP API. Sharing caches between modes to save calls.
+- **Why:** Computable checks give the same answer every time and cost nothing, so a change to a prompt or a weight can be compared with the run before it. An LLM judge would add cost, drift and a second prompt to maintain. Shared caches would make the later modes look cheaper and faster than a real first request.
+- **Consequences:**
+  - A full run of all modes makes about 156 real calls for 26 queries: 78 embeddings, 52 parse calls and 26 pick calls, about 110,000 tokens. The embeddings count toward the free tier's 1,000 a day (D-041).
+  - "Hit rate" depends on the expected movies I chose. Only 47 of the 133 have an embedding, so modes that search by meaning cannot find the other 86 that way; they can still come from the keyword fill (D-046).
+  - The spoiler check only finds listed phrases. It cannot recognise a spoiler worded differently.
+  - Tag match rate counts a movie without tags as a miss, and 58% of the catalog has none.
+
 ---
 
 ## Data

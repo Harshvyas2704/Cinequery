@@ -16,15 +16,20 @@ const STEP_NAMES: Record<string, string> = {
   pick: "Choose the best and say why",
 };
 
-function resultOf(stage: Stage, cached: boolean): string {
+// A step is skipped either because no AI service is configured, or because
+// the day's token budget is used up.
+const skippedBecause = (budget: RecommendResponse["meta"]["budget"]) =>
+  budget ? "Paused: today's AI budget is used up" : "Off: no AI service is configured";
+
+function resultOf(stage: Stage, { cached, budget }: RecommendResponse["meta"]): string {
   if (stage.name === "parse") {
     if (stage.status === "ok") return cached ? "Reused from an earlier request" : "Read by the AI";
-    if (stage.status === "skipped") return "Off: no AI service is configured";
+    if (stage.status === "skipped") return skippedBecause(budget);
     return "Failed, so the words were searched as typed";
   }
   if (stage.name === "embed") {
     if (stage.status === "ok") return cached ? "Reused from an earlier request" : "Done";
-    if (stage.status === "skipped") return "Off: no AI service is configured";
+    if (stage.status === "skipped") return skippedBecause(budget);
     return "Failed, so keywords were used instead";
   }
   if (stage.name === "search") {
@@ -33,7 +38,7 @@ function resultOf(stage: Stage, cached: boolean): string {
   }
   if (stage.name === "pick") {
     if (stage.status === "ok") return cached ? "Reused from an earlier request" : "Chosen by the AI";
-    if (stage.status === "skipped") return "Off: no AI service is configured";
+    if (stage.status === "skipped") return skippedBecause(budget);
     return "Not available, so the search order was kept";
   }
   return stage.status;
@@ -42,7 +47,7 @@ function resultOf(stage: Stage, cached: boolean): string {
 export function describeStages(meta: RecommendResponse["meta"]): StageRow[] {
   return meta.stages.map((stage) => ({
     step: STEP_NAMES[stage.name] ?? stage.name,
-    result: resultOf(stage, meta.cached),
+    result: resultOf(stage, meta),
     ms: stage.ms,
     // A failed pick is not flagged: the results are complete without it, only
     // their order is less considered and they have no reasons.

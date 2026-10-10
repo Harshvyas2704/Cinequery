@@ -45,6 +45,7 @@ describe("loadConfig", () => {
         embeddingDimensions: 768,
         retry: { maxRetries: 3, baseDelayMs: 1000, maxDelayMs: 30000 },
         onlineRetry: { maxRetries: 1, baseDelayMs: 200, maxDelayMs: 1000 },
+        maxConcurrent: 4,
       },
       recommend: {
         candidates: 30,
@@ -77,6 +78,11 @@ describe("loadConfig", () => {
         jobAttempts: 3,
         exportDir: expect.stringMatching(/exports$/),
       },
+      http: { trustProxyHops: 0, bodyLimitBytes: 10000, shutdownTimeoutMs: 10000 },
+      rateLimit: { windowSeconds: 60, recommendMax: 20, apiMax: 120 },
+      budget: { softTokens: 800000, hardTokens: 1000000 },
+      adminToken: undefined,
+      retention: { days: 30, cron: "15 3 * * *" },
     });
   });
 
@@ -84,6 +90,15 @@ describe("loadConfig", () => {
     const config = loadConfig({ ...valid, PORT: undefined, TEST_DATABASE_URL: undefined });
     expect(config.port).toBe(3000);
     expect(config.testDatabaseUrl).toBeUndefined();
+  });
+
+  it("refuses a soft budget above the hard budget, and a short admin token", () => {
+    expect(problemsOf({ ...valid, TOKEN_BUDGET_SOFT: "500", TOKEN_BUDGET_HARD: "100" })).toEqual([
+      "TOKEN_BUDGET_SOFT must not be above TOKEN_BUDGET_HARD",
+    ]);
+    expect(problemsOf({ ...valid, ADMIN_TOKEN: "secret" })).toEqual([
+      "ADMIN_TOKEN must be at least 16 characters",
+    ]);
   });
 
   it("names a missing variable", () => {

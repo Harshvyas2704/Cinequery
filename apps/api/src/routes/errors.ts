@@ -40,7 +40,11 @@ export function parseRequest<Schema extends z.ZodType>(
 
 export const notFound: RequestHandler = (req, res) => {
   res.status(404).json({
-    error: { code: "not_found", message: `No route for ${req.method} ${req.path}` },
+    error: {
+      code: "not_found",
+      message: `No route for ${req.method} ${req.path}`,
+      requestId: String(req.id),
+    },
   });
 };
 
@@ -49,18 +53,28 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
     next(err);
     return;
   }
+  const requestId = String(req.id);
   if (err instanceof HttpError) {
     res.status(err.status).json({
-      error: { code: err.code, message: err.message, details: err.details },
+      error: { code: err.code, message: err.message, details: err.details, requestId },
     });
     return;
   }
   // Errors from Express itself (bad JSON, body too large) carry a 4xx status.
   const status: unknown = (err as { status?: unknown } | null)?.status;
   if (typeof status === "number" && status >= 400 && status < 500) {
-    res.status(status).json({ error: { code: "bad_request", message: "Invalid request" } });
+    const tooLarge = status === 413;
+    res.status(status).json({
+      error: {
+        code: tooLarge ? "payload_too_large" : "bad_request",
+        message: tooLarge ? "The request body is too large" : "Invalid request",
+        requestId,
+      },
+    });
     return;
   }
   req.log.error({ err }, "unhandled error");
-  res.status(500).json({ error: { code: "internal_error", message: "Something went wrong" } });
+  res
+    .status(500)
+    .json({ error: { code: "internal_error", message: "Something went wrong", requestId } });
 };

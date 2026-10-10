@@ -1,3 +1,4 @@
+import { createSemaphore } from "../limits/semaphore.js";
 import {
   type EmbedInput,
   type GenerateJsonInput,
@@ -31,6 +32,8 @@ export type ProviderOptions = {
   retry: RetrySettings;
   /** Called after every attempt. Must not throw. */
   recordCall: (call: LlmCallRecord) => void | Promise<void>;
+  /** How many calls may run at once; the rest wait their turn. Unlimited if absent. */
+  maxConcurrent?: number;
   /** Replaced in tests so retries do not really wait. */
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
@@ -58,6 +61,9 @@ export function retryDelayMs(
  * on 429 and 5xx only, and a row in llm_calls.
  */
 export function createLlmProvider(backend: LlmBackend, options: ProviderOptions): LlmProvider {
+  // One queue for the whole process: a burst of requests cannot open more
+  // connections to the provider, or use up its per-minute quota faster, than this.
+  const slots = options.maxConcurrent ? createSemaphore(options.maxConcurrent) : null;
   const sleep = options.sleep ?? realSleep;
   const random = options.random ?? Math.random;
 
@@ -81,7 +87,11 @@ export function createLlmProvider(backend: LlmBackend, options: ProviderOptions)
       };
       cancel?.addEventListener("abort", onCancel, { once: true });
     });
+    let release: (() => void) | undefined;
     try {
+      // Waiting for a free slot counts toward the timeout: a caller that
+      // would wait too long gets its fallback instead.
+      if (slots) release = await Promise.race([slots.acquire(controller.signal), stopped]);
       // The race means a backend that ignores the abort signal still stops here.
       return await Promise.race([run(controller.signal), stopped]);
     } catch (error) {
@@ -96,6 +106,7 @@ export function createLlmProvider(backend: LlmBackend, options: ProviderOptions)
         cause: error,
       });
     } finally {
+      release?.();
       clearTimeout(timer);
       if (onCancel) cancel?.removeEventListener("abort", onCancel);
     }

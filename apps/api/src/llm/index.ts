@@ -15,13 +15,19 @@ export function createGeminiProvider(
   config: Pick<Config, "llm">,
   pool: Pick<pg.Pool, "query">,
   logger: Logger,
-  // Batch jobs can wait out a rate limit; a request with a user waiting cannot.
-  retry: RetrySettings = config.llm.retry,
+  options: {
+    // Batch jobs can wait out a rate limit; a request with a user waiting cannot.
+    retry?: RetrySettings;
+    maxConcurrent?: number;
+    /** Told the tokens of every call, for the daily budget. */
+    onTokens?: (tokens: number) => Promise<void>;
+  } = {},
 ): LlmProvider {
   const { apiKey } = config.llm;
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY is not set. Add it to .env (see .env.example).");
   }
+  const record = llmCallRecorder(pool, logger);
   return createLlmProvider(
     createGeminiBackend({
       apiKey,
@@ -30,6 +36,13 @@ export function createGeminiProvider(
       embeddingModel: config.llm.embeddingModel,
       embeddingDimensions: config.llm.embeddingDimensions,
     }),
-    { retry, recordCall: llmCallRecorder(pool, logger) },
+    {
+      retry: options.retry ?? config.llm.retry,
+      maxConcurrent: options.maxConcurrent,
+      recordCall: async (call) => {
+        await record(call);
+        await options.onTokens?.((call.inputTokens ?? 0) + (call.outputTokens ?? 0));
+      },
+    },
   );
 }

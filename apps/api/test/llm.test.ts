@@ -170,6 +170,55 @@ describe("cancelling", () => {
   });
 });
 
+describe("concurrency limit", () => {
+  function limited(maxConcurrent: number) {
+    const backend = createFakeBackend({ embeddingDimensions: 8 });
+    const records: LlmCallRecord[] = [];
+    const llm = createLlmProvider(backend, {
+      retry: { ...retry, maxRetries: 0 },
+      maxConcurrent,
+      recordCall: (call) => void records.push(call),
+    });
+    return { backend, llm, records };
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  it("runs at most the configured number of calls at once", async () => {
+    const { backend, llm } = limited(2);
+    // Three calls that never answer by themselves; each ends by its timeout.
+    backend.failNext({ type: "timeout" }, { type: "timeout" }, { type: "timeout" });
+    const calls = [60, 60, 500].map((timeoutMs) => errorOf(llm.embed({ ...embed, timeoutMs })));
+
+    await settle();
+    expect(backend.inFlight).toBe(2);
+    expect(backend.calls).toHaveLength(2);
+
+    // When the first two time out, the third gets its turn.
+    await Promise.all(calls.slice(0, 2));
+    await settle();
+    expect(backend.calls).toHaveLength(3);
+    await calls[2];
+    expect(backend.inFlight).toBe(0);
+  });
+
+  it("times out a call that waits too long for its turn, without sending it", async () => {
+    const { backend, llm, records } = limited(1);
+    backend.failNext({ type: "timeout" });
+    const running = errorOf(llm.embed({ ...embed, timeoutMs: 300 }));
+    await settle();
+
+    const waiting = await errorOf(llm.embed({ ...embed, timeoutMs: 50 }));
+    expect(waiting.kind).toBe("timeout");
+    expect(backend.calls).toHaveLength(1);
+
+    // The place it was waiting for is not lost.
+    await running;
+    backend.respondWith({ ok: true });
+    expect((await llm.generateJson(generate)).data).toEqual({ ok: true });
+    expect(records.map((record) => record.status)).toEqual(["timeout", "timeout", "ok"]);
+  });
+});
+
 describe("call log", () => {
   it("records stage, model, prompt version, tokens and latency", async () => {
     const { backend, llm, records } = setup();
