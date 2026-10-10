@@ -49,6 +49,35 @@ export const recommendationSchema = z.object({
   why: z.string().optional(),
 });
 
+/**
+ * What the parse step understood from the request, after validation. Only
+ * values that passed validation are here, so this is what search really used.
+ */
+export const parsedRequestSchema = z.object({
+  genres: z.array(z.string()),
+  excludeGenres: z.array(z.string()),
+  yearFrom: z.number().int().optional(),
+  yearTo: z.number().int().optional(),
+  maxRuntime: z.number().int().optional(),
+  language: z.string().optional(),
+  minRating: z.number().optional(),
+  tags: z.array(z.string()),
+  excludeTags: z.array(z.string()),
+  referenceTitles: z.array(z.string()),
+  /** The meaning to search for, in English. */
+  searchText: z.string(),
+});
+
+/** Filters that can be loosened when too few movies match, in the order they are tried. */
+export const RELAXABLE_FILTERS = [
+  "excludeTags",
+  "minRating",
+  "maxRuntime",
+  "years",
+  // Last, and only partly: a movie then needs one of the genres instead of all of them.
+  "genres",
+] as const;
+
 export const recommendResponseSchema = z.object({
   requestId: z.string(),
   results: z.array(recommendationSchema),
@@ -56,12 +85,16 @@ export const recommendResponseSchema = z.object({
     stages: z.array(stageSchema),
     /** True when a stored result was reused instead of calling the LLM. */
     cached: z.boolean(),
-    /** Filters that were loosened to find enough results (Phase 6). */
-    relaxed: z.array(z.string()).optional(),
+    /** Filters that were loosened to find enough results, in the order they were dropped. */
+    relaxed: z.array(z.enum(RELAXABLE_FILTERS)).optional(),
+    /** What the request was understood to mean. Absent when the parse step did not run or failed. */
+    parsed: parsedRequestSchema.optional(),
   }),
 });
 
 export type RecommendRequest = z.infer<typeof recommendRequestSchema>;
+export type ParsedRequest = z.infer<typeof parsedRequestSchema>;
+export type RelaxableFilter = (typeof RELAXABLE_FILTERS)[number];
 export type RecommendResponse = z.infer<typeof recommendResponseSchema>;
 export type Recommendation = z.infer<typeof recommendationSchema>;
 export type Stage = z.infer<typeof stageSchema>;

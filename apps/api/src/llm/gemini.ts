@@ -57,14 +57,18 @@ export function createGeminiBackend(settings: GeminiSettings): LlmBackend {
       let response;
       try {
         response = await ai.models.generateContent({
-          model: settings.textModel,
+          model: input.model ?? settings.textModel,
           contents: input.prompt,
           config: {
             systemInstruction: input.system,
             responseMimeType: "application/json",
             responseJsonSchema: input.schema,
             maxOutputTokens: input.maxOutputTokens,
-            thinkingConfig: { thinkingLevel: settings.thinkingLevel.toUpperCase() as ThinkingLevel },
+            thinkingConfig: {
+              thinkingLevel: (
+                input.thinkingLevel ?? settings.thinkingLevel
+              ).toUpperCase() as ThinkingLevel,
+            },
             abortSignal: signal,
           },
         });

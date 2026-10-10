@@ -1,13 +1,21 @@
 import {
-  type CuratedTag,
   curatedTagOf,
-  findCuratedTag,
   type MovieDetail,
   type MovieSummary,
-  type SearchQuery,
   type SearchResponse,
+  type SearchResult,
 } from "@cinequery/shared";
 import type pg from "pg";
+import {
+  FILTER_CONDITIONS,
+  FILTER_PARAMS,
+  filterParams,
+  genomeTagsOf,
+  type MovieFilters,
+  RATING_SCORE,
+  STATS_CTE,
+  tagScoreCte,
+} from "./filters.js";
 
 export type SearchWeights = { text: number; tags: number; rating: number };
 
@@ -15,6 +23,20 @@ export type SearchSettings = {
   weights: SearchWeights;
   /** Prefix for poster_path, for example https://image.tmdb.org/t/p/w342 */
   posterBaseUrl: string;
+};
+
+/** A keyword search: free text, filters, and curated tags. */
+export type KeywordSearch = {
+  q?: string;
+  filters: MovieFilters;
+  tags: string[];
+  /**
+   * "require": a movie must have every tag (the filter page).
+   * "boost": tags only raise the score, so untagged movies can still appear.
+   */
+  tagMode: "require" | "boost";
+  limit: number;
+  offset: number;
 };
 
 type Queryable = Pick<pg.Pool, "query">;
@@ -51,42 +73,30 @@ export function toSummary(row: SummaryRow, posterBaseUrl: string): MovieSummary 
   };
 }
 
+// Parameters after the filters ($1 to $10, see filters.ts):
+const P = FILTER_PARAMS;
+const GENOME = P + 1; // genome tags of the wanted curated tags
+const CURATED = P + 2; // the curated tag of each
+const TAG_COUNT = P + 3; // number of wanted curated tags
+const REQUIRE_TAGS = P + 4; // true: a movie must have all of them
+const Q = P + 5; // the text, or null
+const W_TEXT = P + 6;
+const W_TAGS = P + 7;
+const W_RATING = P + 8;
+const LIMIT = P + 9;
+const OFFSET = P + 10;
+
 // The words of the request joined with OR: a movie matching more of them, and
 // closer together, ranks higher (D-038). plainto_tsquery drops punctuation and
 // stop words, so the user's text can never change the query's structure.
-const TSQUERY = `replace(plainto_tsquery('english', $1)::text, '&', '|')::tsquery`;
+const TSQUERY = `replace(plainto_tsquery('english', $${Q})::text, '&', '|')::tsquery`;
 // True when there is no text to search for: no q, or only stop words ("the").
 const NO_TEXT = `coalesce(numnode(${TSQUERY}), 0) = 0`;
 
-// The ranking formula is explained in docs/ARCHITECTURE.md. Parameters:
-//   $1 q (or null)            $2 genres (or null)        $3 yearFrom   $4 yearTo
-//   $5 language               $6 minRating               $7 genome tags
-//   $8 their curated tags     $9 number of curated tags requested
-//   $10 to $12 weights: text, tags, rating               $13 limit     $14 offset
-//
-// Optional filters are written as "$n IS NULL OR ...". The parameters are known
-// when Postgres plans the query, so unused filters disappear and the rest can
-// use their indexes.
+// The ranking formula is explained in docs/ARCHITECTURE.md.
 const SEARCH = `
-  WITH stats AS (
-    SELECT mean_vote_average AS c, min_votes AS m FROM rating_stats
-  ),
-  wanted AS (
-    SELECT * FROM unnest($7::text[], $8::text[]) AS w (genome_tag, curated_tag)
-  ),
-  -- Movies that have every requested curated tag. A curated tag's relevance is
-  -- the best of its genome tags; tag_score is the average over the requested tags.
-  tagged AS (
-    SELECT movie_id, avg(best)::float8 AS tag_score
-    FROM (
-      SELECT movie_tags.movie_id, wanted.curated_tag, max(movie_tags.relevance) AS best
-      FROM movie_tags
-      JOIN wanted ON wanted.genome_tag = movie_tags.tag
-      GROUP BY movie_tags.movie_id, wanted.curated_tag
-    ) AS per_tag
-    GROUP BY movie_id
-    HAVING count(*) = $9::integer
-  ),
+  WITH ${STATS_CTE},
+  ${tagScoreCte(GENOME, CURATED, TAG_COUNT)},
   matched AS (
     SELECT
       m.id,
@@ -95,37 +105,28 @@ const SEARCH = `
       CASE WHEN ${NO_TEXT} THEN 0 ELSE ts_rank_cd(m.search_tsv, ${TSQUERY}, 32) END::float8
         AS text_score,
       coalesce(tagged.tag_score, 0) AS tag_score,
-      -- 0 to 1: the weighted (Bayesian) rating divided by 10.
-      CASE
-        WHEN m.vote_count + coalesce(stats.m, 0) = 0 THEN 0
-        ELSE (
-          m.vote_count * coalesce(m.vote_average, stats.c, 0)
-          + coalesce(stats.m, 0) * coalesce(stats.c, 0)
-        ) / (m.vote_count + coalesce(stats.m, 0)) / 10
-      END::float8 AS rating_score
+      ${RATING_SCORE} AS rating_score
     FROM movies m
     LEFT JOIN stats ON true
     LEFT JOIN tagged ON tagged.movie_id = m.id
     WHERE (CASE WHEN ${NO_TEXT} THEN true ELSE m.search_tsv @@ ${TSQUERY} END)
-      AND ($2::text[] IS NULL OR m.genres @> $2::text[])
-      AND ($3::integer IS NULL OR m.release_year >= $3::integer)
-      AND ($4::integer IS NULL OR m.release_year <= $4::integer)
-      AND ($5::text IS NULL OR m.language = $5::text)
-      AND ($6::numeric IS NULL OR m.vote_average >= $6::numeric)
-      AND ($9::integer = 0 OR tagged.movie_id IS NOT NULL)
+      AND ${FILTER_CONDITIONS}
+      AND (NOT $${REQUIRE_TAGS}::boolean OR $${TAG_COUNT}::integer = 0
+           OR tagged.matched = $${TAG_COUNT}::integer)
   ),
   scored AS (
     SELECT
       id,
       vote_count,
-      $10::float8 * text_score + $11::float8 * tag_score + $12::float8 * rating_score AS score
+      $${W_TEXT}::float8 * text_score + $${W_TAGS}::float8 * tag_score
+        + $${W_RATING}::float8 * rating_score AS score
     FROM matched
   ),
   page AS (
     SELECT id, score, vote_count
     FROM scored
     ORDER BY score DESC, vote_count DESC, id
-    LIMIT $13 OFFSET $14
+    LIMIT $${LIMIT} OFFSET $${OFFSET}
   )
   -- Always at least one row, so the total is known even for an empty page.
   SELECT totals.total, page.score, ${SUMMARY_COLUMNS}
@@ -135,36 +136,20 @@ const SEARCH = `
   ORDER BY page.score DESC, page.vote_count DESC, page.id
 `;
 
-function genomeTagsOf(curatedNames: string[]): { genome: string[]; curated: string[] } {
-  const genome: string[] = [];
-  const curated: string[] = [];
-  for (const name of curatedNames) {
-    const tag: CuratedTag | undefined = findCuratedTag(name);
-    for (const genomeTag of tag?.genomeTags ?? []) {
-      genome.push(genomeTag);
-      curated.push(name);
-    }
-  }
-  return { genome, curated };
-}
-
-export function searchParams(query: SearchQuery, weights: SearchWeights): unknown[] {
-  const { genome, curated } = genomeTagsOf(query.tags);
+export function searchParams(search: KeywordSearch, weights: SearchWeights): unknown[] {
+  const { genome, curated } = genomeTagsOf(search.tags);
   return [
-    query.q || null,
-    query.genres.length > 0 ? query.genres : null,
-    query.yearFrom ?? null,
-    query.yearTo ?? null,
-    query.language ?? null,
-    query.minRating ?? null,
+    ...filterParams(search.filters),
     genome,
     curated,
-    query.tags.length,
+    search.tags.length,
+    search.tagMode === "require",
+    search.q || null,
     weights.text,
     weights.tags,
     weights.rating,
-    query.limit,
-    query.offset,
+    search.limit,
+    search.offset,
   ];
 }
 
@@ -172,21 +157,17 @@ export const SEARCH_SQL = SEARCH;
 
 export async function searchMovies(
   db: Queryable,
-  query: SearchQuery,
+  search: KeywordSearch,
   settings: SearchSettings,
 ): Promise<SearchResponse> {
   const { rows } = await db.query<SummaryRow & { total: number; score: number | null }>(
     SEARCH,
-    searchParams(query, settings.weights),
+    searchParams(search, settings.weights),
   );
-  return {
-    results: rows
-      .filter((row) => row.id !== null)
-      .map((row) => ({ movie: toSummary(row, settings.posterBaseUrl), score: row.score ?? 0 })),
-    total: rows[0]?.total ?? 0,
-    limit: query.limit,
-    offset: query.offset,
-  };
+  const results: SearchResult[] = rows
+    .filter((row) => row.id !== null)
+    .map((row) => ({ movie: toSummary(row, settings.posterBaseUrl), score: row.score ?? 0 }));
+  return { results, total: rows[0]?.total ?? 0, limit: search.limit, offset: search.offset };
 }
 
 type DetailRow = SummaryRow & {

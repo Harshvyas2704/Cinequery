@@ -384,7 +384,7 @@ Return JSON only: {"picks":[{"id":number,"why":string}]}
 - **Vague request** ("something good"): no useful filters. Return high weighted-rating popular movies and show suggestion chips.
 - **Prompt injection** ("ignore instructions and..."): delimiters in prompts, and only candidate IDs are accepted, so the worst case is poor picks.
 - **Hindi and Hinglish:** handled by English `searchText` (D-013).
-- **Too few results after filters:** relax in a fixed order (tags, rating, years) and report which were relaxed in `meta`.
+- **Too few results after filters:** relax in a fixed order (excluded tags, rating, runtime, years, then "all genres" to "any genre") and report which were relaxed in `meta` (D-046).
 
 ---
 
@@ -605,6 +605,7 @@ Tasks:
       stages: { name: string; ms: number; status: "ok" | "skipped" | "fallback" | "error" }[];
       cached: boolean;
       relaxed?: string[];
+      parsed?: ParsedRequest; // what the request was understood to mean (D-046)
     };
   }
   ```
@@ -629,7 +630,7 @@ Goal: turn the request into filters, tags and a clean search text.
 
 Tasks:
 
-- `parse-v1` prompt and schema (section 7.2), with the curated tag list.
+- `parse-v1` prompt and schema (section 7.2), with the curated tag list. Model: `gemini-3.5-flash-lite` (D-045).
 - Validation: unknown genres and tags dropped; years and runtime clamped or dropped; language checked against known codes.
 - Reference titles: look up each in `movies` (case-insensitive, closest title by trigram similarity or exact match). If found, blend its embedding with the query embedding (weight from config). If not, ignore it.
 - Tags become a score boost; `excludeTags` and `excludeGenres` become SQL exclusions.

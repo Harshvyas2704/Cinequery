@@ -6,7 +6,13 @@ import {
 import { type FormEvent, useEffect, useState } from "react";
 import { ApiError, recommendMovies } from "./api.ts";
 import { MovieCard } from "./MovieCard.tsx";
-import { describeStages, searchedByMeaning, totalMs } from "./stages.ts";
+import {
+  describeParsed,
+  describeRelaxed,
+  describeStages,
+  searchedByMeaning,
+  totalMs,
+} from "./stages.ts";
 
 const EXAMPLES = [
   "space movie about loneliness",
@@ -24,14 +30,28 @@ const queryFromUrl = () => new URLSearchParams(window.location.search).get("q")?
 
 function HowThisWasFound({ meta }: { meta: RecommendResponse["meta"] }) {
   const rows = describeStages(meta);
+  const understood = meta.parsed ? describeParsed(meta.parsed) : [];
+  const relaxed = describeRelaxed(meta.relaxed);
   return (
-    <details className="how">
+    <details className="how" open={relaxed !== null || rows.some((row) => row.problem) || undefined}>
       <summary>
         How this was found
         <span className="how-summary">
           {searchedByMeaning(meta) ? "by meaning" : "by keywords"} · {totalMs(meta)} ms
         </span>
       </summary>
+      {meta.parsed && (
+        <p className="understood">
+          <span className="label">Understood as</span>
+          {understood.map((label) => (
+            <span key={label} className="tag">
+              {label}
+            </span>
+          ))}
+          <span className="search-text">“{meta.parsed.searchText}”</span>
+        </p>
+      )}
+      {relaxed && <p className="relaxed">{relaxed}</p>}
       <table>
         <thead>
           <tr>

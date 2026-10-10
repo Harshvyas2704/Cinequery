@@ -11,7 +11,7 @@ The plan is in `PLAN.md`; the reasons behind choices are in `DECISIONS.md`.
 - [x] Phase 3: Baseline search without AI
 - [x] Phase 4: LLM provider and embeddings pipeline (prototype scope: 980 of 28,725 movies embedded, D-041)
 - [x] Phase 5: Semantic search
-- [ ] Phase 6: Query understanding (parse)
+- [x] Phase 6: Query understanding (parse)
 - [ ] Phase 7: Pick, reasons and streaming
 - [ ] Phase 8: Production concerns
 - [ ] Phase 9: Evaluation
@@ -465,3 +465,72 @@ checked directly against the vectors in Phase 4.
 - Request ids from an `x-request-id` header, rate limits and the token budget:
   Phase 8.
 - Browser tests of the page. The panel's wording logic has unit tests.
+
+## Phase 6: Query understanding (parse)
+
+Status on 2026-10-10: done.
+
+### Built
+
+- Prompt `parse-v1` (`apps/api/src/llm/prompts/parse-v1.ts`) with a JSON Schema
+  for the reply, and `sanitizeParse`, which drops anything unknown or out of
+  range.
+- The recommend pipeline is now parse, embed, search. Parsed genres, years,
+  runtime, language and rating are filters; tags boost the score; excluded
+  genres and tags are left out.
+- "Like <film>": title lookup by trigram similarity (migration
+  `0004_title_trigrams.sql`), and the query vector blended with that film's.
+- Filters are loosened in a fixed order when too few movies match, reported in
+  `meta.relaxed`.
+- Parse results cached in Redis by prompt version, model, year and request.
+- Keyword and vector search now share one set of filter conditions
+  (`apps/api/src/search/filters.ts`).
+- `meta.parsed` in the response, and on the web page the "How this was found"
+  panel shows what was understood and which filters were ignored. It opens by
+  itself when something was ignored or failed.
+- `generateJson` accepts a model and thinking level per call.
+
+### Decided
+
+- Parse runs on `gemini-3.5-flash-lite` with minimal thinking (D-045). The user
+  chose it from measurements.
+- How a request is cleaned, filtered, loosened and filled (D-046).
+
+### Checked
+
+| Check                                                  | Result                                         |
+| ------------------------------------------------------ | ---------------------------------------------- |
+| `pnpm lint`, `pnpm typecheck`, `pnpm build`            | Pass                                           |
+| `pnpm test`                                            | 200 tests pass (17 shared, 163 API, 20 web)    |
+| Unknown genre dropped, bad years dropped               | Pass                                           |
+| Invalid JSON triggers the fallback                     | Pass                                           |
+| Hinglish request embeds the English search text        | Pass (scripted reply)                          |
+| "action movie from the 90s" applies both filters       | Pass                                           |
+| "like Inception" uses the film's embedding             | Pass, including a mistyped title               |
+| Loosening works and is reported                        | Pass                                           |
+| Real API: the headline request                         | Action, from 2011, twist ending; recent action films with the twist tag |
+| Real API: Hinglish with a decade                       | Thriller, 1990 to 1999; The Silence of the Lambs, The Usual Suspects |
+| Real API: "like The Matrix but funnier"                | Men in Black first                             |
+
+Three requests went through the real API end to end (three parse calls, three
+embedding calls). Times and tokens are in `docs/ARCHITECTURE.md`.
+
+### Things to know for later phases
+
+- **`gemini-3.8-flash` at thinking `low` did not answer the parse prompt within
+  90 seconds, five times.** At `medium` it took 5.2 seconds. It is still the
+  default text model for the pick step; measure it first in Phase 7.
+- **Meaning matches come first in the list even when weak.** For the headline
+  request the first result is Sin City: A Dame to Kill For, the only embedded
+  action film from 2011 on, and it has no twist tag. This is a side effect of
+  having 980 embeddings; the pick step (Phase 7) will reorder, and Phase 9 can
+  measure whether the two rankings should be fused.
+- **The model tends to list several genres.** They are all required at first
+  and loosened to "any one" only when too few films match.
+- A full request now takes about 2 seconds uncached (parse 1.4 s, embed 0.65 s).
+
+### Deferred
+
+- Streaming first results before the slow steps finish: Phase 7.
+- A token budget and rate limits on the two LLM calls per request: Phase 8.
+- Browser tests of the panel. Its wording has unit tests.

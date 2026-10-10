@@ -18,6 +18,8 @@ export type FakeBackend = LlmBackend & {
   respondWith(data: unknown): void;
   /** Queue a failure for the next call of either kind. */
   failNext(...failures: FakeFailure[]): void;
+  /** Queue a failure for the next embed call only. */
+  failNextEmbed(...failures: FakeFailure[]): void;
   /** Every call that reached the backend, including failed ones. */
   readonly calls: { method: "generateJson" | "embed"; input: GenerateJsonInput | EmbedInput }[];
 };
@@ -43,11 +45,12 @@ export function fakeEmbedding(text: string, dimensions: number): number[] {
 export function createFakeBackend(options: { embeddingDimensions: number }): FakeBackend {
   const replies: unknown[] = [];
   const failures: FakeFailure[] = [];
+  const embedFailures: FakeFailure[] = [];
   const calls: FakeBackend["calls"] = [];
 
   // Applies the next queued failure, if any.
-  async function maybeFail(signal: AbortSignal): Promise<void> {
-    const failure = failures.shift();
+  async function maybeFail(signal: AbortSignal, own: FakeFailure[] = []): Promise<void> {
+    const failure = own.shift() ?? failures.shift();
     if (!failure) return;
     if (failure.type === "timeout") {
       await new Promise<never>((_, reject) => {
@@ -70,6 +73,7 @@ export function createFakeBackend(options: { embeddingDimensions: number }): Fak
     calls,
     respondWith: (data) => void replies.push(data),
     failNext: (...next) => void failures.push(...next),
+    failNextEmbed: (...next) => void embedFailures.push(...next),
 
     async generateJson(input, signal) {
       calls.push({ method: "generateJson", input });
@@ -82,7 +86,7 @@ export function createFakeBackend(options: { embeddingDimensions: number }): Fak
 
     async embed(input, signal) {
       calls.push({ method: "embed", input });
-      await maybeFail(signal);
+      await maybeFail(signal, embedFailures);
       return {
         // Documents and queries with the same text get the same vector, so a
         // test can search for a movie by its own text.

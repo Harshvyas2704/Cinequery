@@ -6,8 +6,11 @@ import { pinoHttp } from "pino-http";
 import type { Config } from "./config/env.js";
 import { errorHandler, notFound } from "./routes/errors.js";
 import { type HealthDeps, healthRouter } from "./routes/health.js";
-import { type MoviesDeps, moviesRouter } from "./routes/movies.js";
+import { moviesRouter } from "./routes/movies.js";
 import { recommendRouter } from "./routes/recommend.js";
+import type { ParsedRequest } from "@cinequery/shared";
+import type pg from "pg";
+import type { JsonCache } from "./cache/jsonCache.js";
 import type { QueryEmbeddingCache } from "./cache/queryEmbeddings.js";
 import type { LlmProvider } from "./llm/types.js";
 
@@ -15,11 +18,14 @@ export type AppDeps = {
   config: Pick<Config, "webOrigin" | "healthCheckTimeoutMs" | "search" | "recommend"> & {
     llm: Pick<Config["llm"], "embeddingModel">;
   };
-  pool: HealthDeps["pool"] & MoviesDeps["pool"];
+  pool: pg.Pool;
   redis: HealthDeps["redis"];
   /** Null when no API key is configured; search then works by keywords only. */
   llm: LlmProvider | null;
   queryEmbeddingCache: QueryEmbeddingCache;
+  parseCache: JsonCache<ParsedRequest>;
+  /** The clock; tests fix it. */
+  now?: () => Date;
   logger: Logger;
 };
 
@@ -44,7 +50,11 @@ export function createApp(deps: AppDeps): Express {
     recommendRouter({
       pool,
       llm: deps.llm,
-      cache: deps.queryEmbeddingCache,
+      embeddingCache: deps.queryEmbeddingCache,
+      parseCache: deps.parseCache,
+      parse: config.recommend.parse,
+      reference: config.recommend.reference,
+      now: deps.now,
       vector: {
         model: config.llm.embeddingModel,
         candidates: config.recommend.candidates,

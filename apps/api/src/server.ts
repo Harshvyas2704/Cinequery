@@ -1,5 +1,7 @@
 import { pino } from "pino";
 import { createApp } from "./app.js";
+import { parsedRequestSchema } from "@cinequery/shared";
+import { createJsonCache } from "./cache/jsonCache.js";
 import { createQueryEmbeddingCache } from "./cache/queryEmbeddings.js";
 import { createRedis } from "./cache/redis.js";
 import { loadConfigOrExit } from "./config/env.js";
@@ -25,7 +27,14 @@ const queryEmbeddingCache = createQueryEmbeddingCache(redis, {
   logger,
 });
 
-const app = createApp({ config, pool, redis, llm, queryEmbeddingCache, logger });
+const parseCache = createJsonCache(redis, {
+  name: "parse",
+  schema: parsedRequestSchema,
+  ttlSeconds: config.recommend.parse.cacheTtlSeconds,
+  logger,
+});
+
+const app = createApp({ config, pool, redis, llm, queryEmbeddingCache, parseCache, logger });
 
 const server = app.listen(config.port, () => {
   logger.info(`API listening on http://localhost:${config.port}`);
