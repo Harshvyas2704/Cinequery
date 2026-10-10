@@ -4,6 +4,7 @@ import { z } from "zod";
 
 // The repo root .env, four levels up from src/config (and from dist/config).
 const ENV_FILE = fileURLToPath(new URL("../../../../.env", import.meta.url));
+const DEFAULT_DATA_DIR = fileURLToPath(new URL("../../../../data/clean", import.meta.url));
 
 /** Loads the root .env if it exists. Variables already set in the environment win. */
 export function loadEnvFile(): void {
@@ -43,6 +44,20 @@ const envSchema = z.object({
     .int({ error: message("a positive number of milliseconds") })
     .positive({ error: message("a positive number of milliseconds") })
     .default(2000),
+  // Folder with movies.parquet and movie_tags.parquet, read by `pnpm ingest`.
+  DATA_DIR: z.string().default(DEFAULT_DATA_DIR),
+  INGEST_BATCH_SIZE: z.coerce
+    .number({ error: message("a whole number between 1 and 5000") })
+    .int({ error: message("a whole number between 1 and 5000") })
+    .min(1, { error: message("a whole number between 1 and 5000") })
+    .max(5000, { error: message("a whole number between 1 and 5000") })
+    .default(500),
+  // m in the weighted rating is this percentile of vote_count across the catalog (D-036).
+  RATING_MIN_VOTES_PERCENTILE: z.coerce
+    .number({ error: message("a number between 0 and 1") })
+    .min(0, { error: message("a number between 0 and 1") })
+    .max(1, { error: message("a number between 0 and 1") })
+    .default(0.5),
 });
 
 export type Config = {
@@ -54,6 +69,9 @@ export type Config = {
   redisUrl: string;
   logLevel: string;
   healthCheckTimeoutMs: number;
+  dataDir: string;
+  ingestBatchSize: number;
+  ratingMinVotesPercentile: number;
 };
 
 /** Thrown when the environment is missing or has invalid variables. Never contains values. */
@@ -92,6 +110,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     redisUrl: parsed.REDIS_URL,
     logLevel: parsed.LOG_LEVEL,
     healthCheckTimeoutMs: parsed.HEALTH_CHECK_TIMEOUT_MS,
+    dataDir: parsed.DATA_DIR,
+    ingestBatchSize: parsed.INGEST_BATCH_SIZE,
+    ratingMinVotesPercentile: parsed.RATING_MIN_VOTES_PERCENTILE,
   };
 }
 

@@ -14,7 +14,8 @@
     "test:unit": "pnpm build:shared && pnpm -r test:unit",
     "lint": "eslint .",
     "typecheck": "pnpm build:shared && pnpm -r typecheck",
-    "db:migrate": "pnpm --filter @cinequery/api db:migrate"
+    "db:migrate": "pnpm --filter @cinequery/api db:migrate",
+    "ingest": "pnpm --filter @cinequery/api ingest"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

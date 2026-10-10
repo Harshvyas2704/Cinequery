@@ -133,7 +133,7 @@ END;
 
 .shell mkdir -p data/clean
 COPY (SELECT * FROM catalog ORDER BY tmdb_id)
-  TO 'data/clean/movies.parquet' (FORMAT parquet, COMPRESSION zstd);
+  TO 'data/clean/movies.parquet' (FORMAT parquet);
 
 SELECT
   count(*)                            AS catalog_movies,
@@ -230,7 +230,7 @@ WHERE tag_rank <= getvariable('top_tags_per_movie')
    OR (getvariable('keep_curated_tags') AND is_curated);
 
 COPY (SELECT * FROM movie_tags ORDER BY tmdb_id, relevance DESC, tag)
-  TO 'data/clean/movie_tags.parquet' (FORMAT parquet, COMPRESSION zstd);
+  TO 'data/clean/movie_tags.parquet' (FORMAT parquet);
 
 SELECT
   (SELECT count(*) FROM catalog)              AS catalog_movies,

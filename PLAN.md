@@ -243,7 +243,7 @@ CREATE TABLE movies (
   imdb_id         text,
   search_tsv      tsvector GENERATED ALWAYS AS (
                     setweight(to_tsvector('english', title), 'A') ||
-                    setweight(to_tsvector('english', array_to_string(keywords, ' ')), 'B') ||
+                    setweight(to_tsvector('english', text_array_to_string(keywords, ' ')), 'B') ||   -- wrapper, see D-037
                     setweight(to_tsvector('english', coalesce(tagline, '') || ' ' || overview), 'C')
                   ) STORED,
   created_at      timestamptz NOT NULL DEFAULT now(),
@@ -259,6 +259,7 @@ CREATE TABLE movie_tags (
 );
 
 CREATE TABLE rating_stats (                    -- one row, for the weighted rating
+  id                boolean PRIMARY KEY DEFAULT true CHECK (id),   -- D-037
   mean_vote_average numeric NOT NULL,          -- C
   min_votes         integer NOT NULL,          -- m
   computed_at       timestamptz NOT NULL DEFAULT now()
@@ -495,11 +496,11 @@ Tasks:
 
 - Migrations for `movies`, `movie_tags`, `rating_stats` and their indexes (section 6).
 - `pnpm ingest`:
-  - Read the two Parquet files with a small Parquet reader library (for example `hyparquet`). Record the choice in `DECISIONS.md`.
+  - Read the two Parquet files with `hyparquet` (D-035).
   - Split `genres` and `keywords` into arrays, trim values, drop empty ones.
   - Upsert movies on `tmdb_id` in batches of 500, one transaction per batch.
-  - Replace tags per movie (delete and insert inside the same transaction).
-  - Compute `rating_stats` (`C` as the mean `vote_average`, `m` from a config percentile of `vote_count`).
+  - Replace tags per movie inside the same transaction: remove tags that are gone, write new or changed ones (D-037).
+  - Compute `rating_stats` (`C` as the mean `vote_average`, `m` from a config percentile of `vote_count`, D-036).
   - Print a summary: inserted, updated, unchanged, tags loaded, time taken.
 - Tests (against `movies_test`): array splitting; upsert idempotency (second run reports 0 inserted); a changed overview is updated; tags replaced, not duplicated.
 - Measure table sizes and record them.
