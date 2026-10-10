@@ -13,6 +13,7 @@ const STEP_NAMES: Record<string, string> = {
   parse: "Understand the request",
   embed: "Turn it into a meaning vector",
   search: "Search the catalog",
+  pick: "Choose the best and say why",
 };
 
 function resultOf(stage: Stage, cached: boolean): string {
@@ -30,6 +31,11 @@ function resultOf(stage: Stage, cached: boolean): string {
     if (stage.status === "fallback") return "Nothing found by meaning, so keywords were used";
     if (stage.status === "ok") return "Done";
   }
+  if (stage.name === "pick") {
+    if (stage.status === "ok") return cached ? "Reused from an earlier request" : "Chosen by the AI";
+    if (stage.status === "skipped") return "Off: no AI service is configured";
+    return "Not available, so the search order was kept";
+  }
   return stage.status;
 }
 
@@ -38,7 +44,9 @@ export function describeStages(meta: RecommendResponse["meta"]): StageRow[] {
     step: STEP_NAMES[stage.name] ?? stage.name,
     result: resultOf(stage, meta.cached),
     ms: stage.ms,
-    problem: stage.status === "fallback" || stage.status === "error",
+    // A failed pick is not flagged: the results are complete without it, only
+    // their order is less considered and they have no reasons.
+    problem: stage.name !== "pick" && (stage.status === "fallback" || stage.status === "error"),
   }));
 }
 

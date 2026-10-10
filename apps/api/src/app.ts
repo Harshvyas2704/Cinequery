@@ -9,6 +9,7 @@ import { type HealthDeps, healthRouter } from "./routes/health.js";
 import { moviesRouter } from "./routes/movies.js";
 import { recommendRouter } from "./routes/recommend.js";
 import type { ParsedRequest } from "@cinequery/shared";
+import type { Pick as MoviePick } from "./recommend/pick.js";
 import type pg from "pg";
 import type { JsonCache } from "./cache/jsonCache.js";
 import type { QueryEmbeddingCache } from "./cache/queryEmbeddings.js";
@@ -24,6 +25,7 @@ export type AppDeps = {
   llm: LlmProvider | null;
   queryEmbeddingCache: QueryEmbeddingCache;
   parseCache: JsonCache<ParsedRequest>;
+  pickCache: JsonCache<MoviePick[]>;
   /** The clock; tests fix it. */
   now?: () => Date;
   logger: Logger;
@@ -52,7 +54,9 @@ export function createApp(deps: AppDeps): Express {
       llm: deps.llm,
       embeddingCache: deps.queryEmbeddingCache,
       parseCache: deps.parseCache,
+      pickCache: deps.pickCache,
       parse: config.recommend.parse,
+      pick: config.recommend.pick,
       reference: config.recommend.reference,
       now: deps.now,
       vector: {

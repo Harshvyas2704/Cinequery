@@ -16,12 +16,16 @@ export type FakeFailure =
 export type FakeBackend = LlmBackend & {
   /** Queue the reply of the next generateJson call. */
   respondWith(data: unknown): void;
+  /** Queue a failure in place of a reply: "the second generateJson call times out". */
+  respondWithFailure(failure: FakeFailure): void;
   /** Queue a failure for the next call of either kind. */
   failNext(...failures: FakeFailure[]): void;
   /** Queue a failure for the next embed call only. */
   failNextEmbed(...failures: FakeFailure[]): void;
   /** Every call that reached the backend, including failed ones. */
   readonly calls: { method: "generateJson" | "embed"; input: GenerateJsonInput | EmbedInput }[];
+  /** How many calls are running right now. Tests use it to check nothing is left behind. */
+  readonly inFlight: number;
 };
 
 /**
@@ -43,7 +47,8 @@ export function fakeEmbedding(text: string, dimensions: number): number[] {
 
 /** Stands in for Gemini in tests: no network, scripted replies and failures. */
 export function createFakeBackend(options: { embeddingDimensions: number }): FakeBackend {
-  const replies: unknown[] = [];
+  const replies: ({ data: unknown } | { failure: FakeFailure })[] = [];
+  let inFlight = 0;
   const failures: FakeFailure[] = [];
   const embedFailures: FakeFailure[] = [];
   const calls: FakeBackend["calls"] = [];
@@ -71,17 +76,31 @@ export function createFakeBackend(options: { embeddingDimensions: number }): Fak
     textModel: "fake-text",
     embeddingModel: "fake-embedding",
     calls,
-    respondWith: (data) => void replies.push(data),
+    get inFlight() {
+      return inFlight;
+    },
+    respondWith: (data) => void replies.push({ data }),
+    respondWithFailure: (failure) => void replies.push({ failure }),
     failNext: (...next) => void failures.push(...next),
     failNextEmbed: (...next) => void embedFailures.push(...next),
 
     async generateJson(input, signal) {
       calls.push({ method: "generateJson", input });
-      await maybeFail(signal);
-      if (replies.length === 0) {
-        throw new LlmError("error", "The fake provider has no scripted reply for generateJson");
+      inFlight++;
+      try {
+        await maybeFail(signal);
+        const reply = replies.shift();
+        if (!reply) {
+          throw new LlmError("error", "The fake provider has no scripted reply for generateJson");
+        }
+        if ("failure" in reply) {
+          await maybeFail(signal, [reply.failure]);
+          throw new LlmError("error", "The fake provider failed as scripted");
+        }
+        return { data: reply.data, usage: { inputTokens: 100, outputTokens: 20 } };
+      } finally {
+        inFlight--;
       }
-      return { data: replies.shift(), usage: { inputTokens: 100, outputTokens: 20 } };
     },
 
     async embed(input, signal) {

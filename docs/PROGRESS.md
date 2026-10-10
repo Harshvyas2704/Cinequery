@@ -12,7 +12,7 @@ The plan is in `PLAN.md`; the reasons behind choices are in `DECISIONS.md`.
 - [x] Phase 4: LLM provider and embeddings pipeline (prototype scope: 980 of 28,725 movies embedded, D-041)
 - [x] Phase 5: Semantic search
 - [x] Phase 6: Query understanding (parse)
-- [ ] Phase 7: Pick, reasons and streaming
+- [x] Phase 7: Pick, reasons and streaming
 - [ ] Phase 8: Production concerns
 - [ ] Phase 9: Evaluation
 - [ ] Phase 10: LLM tag fallback (only if evaluation shows a need)
@@ -534,3 +534,86 @@ embedding calls). Times and tokens are in `docs/ARCHITECTURE.md`.
 - Streaming first results before the slow steps finish: Phase 7.
 - A token budget and rate limits on the two LLM calls per request: Phase 8.
 - Browser tests of the panel. Its wording has unit tests.
+
+## Phase 7: Pick, reasons and streaming
+
+Done on 2026-10-10.
+
+### Built
+
+- Prompt `pick-v1` (`apps/api/src/llm/prompts/pick-v1.ts`) and compact
+  candidate lines: id, title, year, genres, top 5 tags, overview cut to about
+  300 characters (`apps/api/src/recommend/candidates.ts`).
+- The search fetches up to 30 movies when an LLM is configured, so the model
+  has a choice; the first `limit` are the search-order answer.
+- Validation and fill (`apps/api/src/recommend/pick.ts`): ids that are not
+  candidates, repeats and malformed picks are dropped and counted in the log;
+  missing slots are filled in search order without a reason.
+- Fallback: on a timeout, an error or a reply with no usable pick, the search
+  order is returned without reasons and the stage is `fallback`.
+- Picks cached in Redis for one day, keyed by prompt version, model, request,
+  limit and candidate ids.
+- `POST /api/recommend/stream` with Server-Sent Events `results`, `picked`,
+  `done` and `error`. `POST /api/recommend` is kept and returns the same final
+  answer in one piece.
+- Cancellation: when the client disconnects, the running LLM call is aborted
+  and logged as `cancelled`. `generateJson` and `embed` take an abort signal.
+- Web: results appear as soon as the search is done, then the cards move to
+  the picked order (no animation with reduced motion) and show the reason. A
+  failed pick shows nothing: no error, and the panel does not open by itself.
+- The fake provider can fail a chosen call (`respondWithFailure`) and reports
+  how many calls are running (`inFlight`).
+
+### Decided
+
+- The pick step runs on `gemini-3.5-flash-lite` with minimal thinking (D-047).
+  The user chose it from measurements.
+- How picks are made, checked, cached and streamed (D-048).
+
+### Checked
+
+| Check                                                   | Result                                       |
+| ------------------------------------------------------- | -------------------------------------------- |
+| `pnpm lint`, `pnpm typecheck`, `pnpm build`             | Pass                                         |
+| `pnpm test`                                             | 236 tests pass (17 shared, 193 API, 26 web)  |
+| Hallucinated, repeated and malformed ids dropped        | Pass                                         |
+| Missing slots filled from search order, without reasons | Pass                                         |
+| Fallback on timeout and on an unusable reply            | Pass; a failed pick is not cached            |
+| SSE event order: results, picked, done                  | Pass                                         |
+| Results are sent while the pick call is still running   | Pass                                         |
+| Database failure gives an `error` event, safe message   | Pass                                         |
+| Client disconnect stops the LLM call, nothing left open | Pass, on both routes                         |
+| Real API: first results appear before the reasons       | 2.4 s and 4.5 s uncached; 0.1 s and 2.6 s with a cached parse |
+| Real API: no spoilers in a sample of twist requests     | 55 reasons from 4 requests read by hand; none states an ending, a few hint at where the surprise lies |
+| Real API: stream through the Vite dev proxy             | Events arrive one at a time                  |
+| Page in headless Chrome                                 | Cards show reasons; filled slots show none   |
+
+The real API was called 20 times for this phase: 12 pick calls, 4 parse calls
+and 4 embedding calls.
+Times and tokens are in `docs/ARCHITECTURE.md`.
+
+### Things to know for later phases
+
+- **`gemini-3.8-flash` is no longer used while a user waits.** At thinking
+  `low` one of five pick calls gave no reply within 8 seconds. It is still
+  `GEMINI_TEXT_MODEL`, for Phase 10.
+- **The model comparison is small** (5 or 6 calls each). Phase 9 should compare
+  pick models on the evaluation set, and count spoilers there.
+- **A request now costs about 3,600 tokens**, about 3,000 of them in the pick.
+  Phase 8's token budget should be sized from that; a skipped pick (soft
+  budget) saves most of the cost.
+- **Reasons are sometimes longer than 25 words.** They are cut only at 240
+  characters. The cards get tall with a long reason.
+- **Results at 0.1 s need a cached parse.** Uncached, the first results still
+  wait about 2.4 s for parse and embedding.
+- `llm_calls.status` can now be `cancelled`. Stats in Phase 8 should not count
+  it as a failure.
+- The reorder animation was not watched in a real browser; headless Chrome
+  only showed the final state.
+
+### Deferred
+
+- Request ids in headers and logs, rate limits, the token budget and a limit on
+  concurrent LLM calls: Phase 8.
+- Sending each pick as the model writes it: not planned (D-048).
+- Browser tests of the page. The stream parser and the wording have unit tests.

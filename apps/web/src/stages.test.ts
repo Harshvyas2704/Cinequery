@@ -62,9 +62,22 @@ describe("describeStages", () => {
     expect(parse("skipped").problem).toBe(false);
   });
 
+  it("describes the pick step, and does not flag its fallback", () => {
+    const pick = (status: string, cached = false) =>
+      describeStages({ cached, stages: [{ name: "pick", ms: 3000, status: status as "ok" }] })[0]!;
+    expect(pick("ok")).toMatchObject({ step: "Choose the best and say why", result: "Chosen by the AI" });
+    expect(pick("ok", true).result).toBe("Reused from an earlier request");
+    expect(pick("skipped").result).toBe("Off: no AI service is configured");
+    // The results are complete without the picks, so this is not shown as a problem.
+    expect(pick("fallback")).toMatchObject({
+      result: "Not available, so the search order was kept",
+      problem: false,
+    });
+  });
+
   it("shows an unknown stage as it is", () => {
-    const rows = describeStages({ cached: false, stages: [{ name: "pick", ms: 3, status: "ok" }] });
-    expect(rows).toEqual([{ step: "pick", result: "ok", ms: 3, problem: false }]);
+    const rows = describeStages({ cached: false, stages: [{ name: "rerank", ms: 3, status: "ok" }] });
+    expect(rows).toEqual([{ step: "rerank", result: "ok", ms: 3, problem: false }]);
   });
 });
 

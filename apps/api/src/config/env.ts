@@ -125,6 +125,25 @@ const envSchema = z.object({
   PARSE_MAX_OUTPUT_TOKENS: wholeNumber(50, 4000).default(500),
   // How long a parsed request is kept in Redis. Default: 7 days.
   PARSE_CACHE_TTL_SECONDS: wholeNumber(1, 31_536_000).default(604_800),
+  // The pick step (prompt pick-v1): chooses the best candidates and says why.
+  // The same small model as parse: measured about twice as fast as
+  // GEMINI_TEXT_MODEL, with no timeouts (D-047).
+  GEMINI_PICK_MODEL: z.string().min(1).default("gemini-3.5-flash-lite"),
+  GEMINI_PICK_THINKING_LEVEL: z
+    .enum(["minimal", "low", "medium", "high"], {
+      error: message("minimal, low, medium or high"),
+    })
+    .default("minimal"),
+  // Results are already on screen while this runs, so it may take longer than parse.
+  PICK_TIMEOUT_MS: wholeNumber(100, 60_000).default(8000),
+  PICK_MAX_OUTPUT_TOKENS: wholeNumber(50, 8000).default(2000),
+  // How many search results the model chooses from (D-006).
+  PICK_CANDIDATES: wholeNumber(1, 30).default(30),
+  // What the model sees of each candidate (PLAN.md 7.1).
+  PICK_TAGS_PER_CANDIDATE: wholeNumber(0, 25).default(5),
+  PICK_OVERVIEW_CHARS: wholeNumber(0, 2000).default(300),
+  // How long a set of picks is kept in Redis. Default: 1 day.
+  PICK_CACHE_TTL_SECONDS: wholeNumber(1, 31_536_000).default(86_400),
   EMBED_QUERY_TIMEOUT_MS: wholeNumber(100, 60_000).default(4000),
   // How long a request's embedding is kept in Redis. It never goes stale for a
   // given model, so this only bounds memory. Default: 7 days.
@@ -177,6 +196,16 @@ export type Config = {
       thinkingLevel: string;
       timeoutMs: number;
       maxOutputTokens: number;
+      cacheTtlSeconds: number;
+    };
+    pick: {
+      model: string;
+      thinkingLevel: string;
+      timeoutMs: number;
+      maxOutputTokens: number;
+      candidates: number;
+      tagsPerCandidate: number;
+      overviewChars: number;
       cacheTtlSeconds: number;
     };
   };
@@ -272,6 +301,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         timeoutMs: parsed.PARSE_TIMEOUT_MS,
         maxOutputTokens: parsed.PARSE_MAX_OUTPUT_TOKENS,
         cacheTtlSeconds: parsed.PARSE_CACHE_TTL_SECONDS,
+      },
+      pick: {
+        model: parsed.GEMINI_PICK_MODEL,
+        thinkingLevel: parsed.GEMINI_PICK_THINKING_LEVEL,
+        timeoutMs: parsed.PICK_TIMEOUT_MS,
+        maxOutputTokens: parsed.PICK_MAX_OUTPUT_TOKENS,
+        candidates: parsed.PICK_CANDIDATES,
+        tagsPerCandidate: parsed.PICK_TAGS_PER_CANDIDATE,
+        overviewChars: parsed.PICK_OVERVIEW_CHARS,
+        cacheTtlSeconds: parsed.PICK_CACHE_TTL_SECONDS,
       },
     },
     embed: {

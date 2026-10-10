@@ -176,7 +176,7 @@ flowchart TD
 
 ### D-045 The parse step uses Gemini 3.5 Flash-Lite with minimal thinking
 - **Status:** Accepted, 2026-10-10
-- **Decision:** `GEMINI_PARSE_MODEL=gemini-3.5-flash-lite` with `GEMINI_PARSE_THINKING_LEVEL=minimal`. `generateJson` takes an optional model and thinking level per call, so each stage can have its own. The default text model for later stages stays `gemini-3.8-flash` (D-040) until it is measured for the pick step.
+- **Decision:** `GEMINI_PARSE_MODEL=gemini-3.5-flash-lite` with `GEMINI_PARSE_THINKING_LEVEL=minimal`. `generateJson` takes an optional model and thinking level per call, so each stage can have its own. The default text model for later stages stays `gemini-3.8-flash` (D-040) until it is measured for the pick step (done in D-047).
 - **Alternatives:** `gemini-3.8-flash` with thinking `medium`.
 - **Why:** Measured with the user's key on the real prompt (about 505 input tokens):
 
@@ -205,6 +205,38 @@ flowchart TD
   - The keyword fill exists because only 980 movies have embeddings (D-041). With filters such as "from 2011", almost no embedded film qualifies, and the rest of the list has to come from the 27,745 others.
   - 0.55 for titles was set from measurements: "incepton" scores 0.58 against "inception" and "heat" 0.56 against "the heat", while "inception" against "interception" scores 0.53.
 - **Consequences:** Scores from the meaning search and the keyword fill are on different scales, so a list that mixes them shows meaning matches first even when a keyword match looks stronger. With full embedding coverage the fill is rarely needed. Fusing the two rankings properly is a question for Phase 9.
+
+### D-047 The pick step uses Gemini 3.5 Flash-Lite with minimal thinking
+- **Status:** Accepted, 2026-10-10
+- **Decision:** `GEMINI_PICK_MODEL=gemini-3.5-flash-lite` with `GEMINI_PICK_THINKING_LEVEL=minimal`, the same as the parse step (D-045). The call times out after 8 seconds (`PICK_TIMEOUT_MS`).
+- **Alternatives:** `gemini-3.8-flash` with thinking `low`, the default text model (D-040).
+- **Why:** Measured with the user's key on the real prompt with 30 real candidates (about 2,700 input and 280 output tokens):
+
+  | Model and thinking      | Time          | Calls that answered |
+  | ----------------------- | ------------- | ------------------- |
+  | 3.5 Flash-Lite, minimal | 2.2 to 2.7 s  | 6 of 6              |
+  | 3.8 Flash, low          | 3.9 to 5.7 s  | 4 of 5 (one gave no reply in 8 s) |
+  | 3.8 Flash, medium       | 10.8 s        | 1 of 1              |
+
+  The picks and reasons were about as good from both. In four requests about twists, neither model stated an ending; both sometimes hint at where the surprise lies. The user chose Flash-Lite from these numbers.
+- **Consequences:** No request-time step uses `GEMINI_TEXT_MODEL` now; it stays in config for Phase 10 (tags). The sample is small. Phase 9 should compare the two models on the evaluation set before this is treated as settled.
+
+### D-048 How picks are made, checked, cached and streamed
+- **Status:** Accepted, 2026-10-10
+- **Decision:**
+  - **The search fetches up to 30 movies when an LLM is configured** (`PICK_CANDIDATES`), not just the number asked for, so the model has a choice. The model may pick a movie the search ranked below the first `limit`.
+  - **The model's reply is checked pick by pick.** An id that is not a candidate, a repeated id and a malformed pick are dropped and counted in the log. A reason is put on one line and cut at 240 characters. Missing slots are filled in search order without a reason. A reply with no usable pick at all counts as a failed pick.
+  - **A failed pick is not an error.** The search order is returned without reasons, `meta.stages` says `fallback`, and the web page does not flag it.
+  - **Picks are cached for one day** under the prompt version, the model, the normalized request, the limit and the ids of the candidates. This is the "final result" cache of D-009: with the parse and embedding caches, a repeated request makes no LLM call.
+  - **`POST /api/recommend/stream` sends Server-Sent Events:** `results` (search order, and whether picks will follow), `picked` (final order with reasons, only if the pick succeeded), then `done` (the final `meta`) or `error` (a fixed, safe message). An invalid request gets a normal 400 before the stream starts.
+  - **When the client disconnects, the work stops.** Both routes pass an abort signal through the pipeline to the LLM call. The stopped call is written to `llm_calls` with the new status `cancelled`, is not retried, and nothing is cached.
+- **Alternatives:** Caching the whole response by request alone. One `picked` event per movie as the model writes it. `EventSource` in the browser.
+- **Why:**
+  - The candidate ids are in the cache key because the same request has other candidates after new data, new embeddings or a change to the search; picks for the old candidates would then be stale.
+  - One day, not seven like parse results: reasons are the part of the answer users read, and a short life limits how long a poor one is repeated.
+  - Events per movie would need a streaming JSON parser on the server and partial validation; the whole pick takes 2 to 3 seconds, so the gain is small.
+  - `EventSource` only sends GET requests. The page reads the stream from `fetch` with a small parser of its own (`apps/web/src/sse.ts`).
+- **Consequences:** An uncached request costs about 3,600 tokens, of which the pick is about 3,000. `llm_calls.status` has one more value. A cancelled call may still be billed by the provider; its token count is unknown and stored as null.
 
 ---
 

@@ -55,6 +55,16 @@ export const testAppConfig: AppDeps["config"] = {
       maxOutputTokens: 500,
       cacheTtlSeconds: 60,
     },
+    pick: {
+      model: "fake-pick",
+      thinkingLevel: "low",
+      timeoutMs: 500,
+      maxOutputTokens: 1000,
+      candidates: 30,
+      tagsPerCandidate: 5,
+      overviewChars: 300,
+      cacheTtlSeconds: 60,
+    },
   },
   llm: { embeddingModel: "fake-embedding" },
 };
@@ -69,6 +79,7 @@ export async function startApp(deps: {
   llm?: AppDeps["llm"];
   queryEmbeddingCache?: AppDeps["queryEmbeddingCache"];
   parseCache?: AppDeps["parseCache"];
+  pickCache?: AppDeps["pickCache"];
   now?: AppDeps["now"];
 }): Promise<{ url: string; close: () => Promise<void> }> {
   const app = createApp({
@@ -76,6 +87,7 @@ export async function startApp(deps: {
     llm: null,
     queryEmbeddingCache: noCache,
     parseCache: noCache,
+    pickCache: noCache,
     ...deps,
     config: deps.config ?? testAppConfig,
     pool: deps.pool as AppDeps["pool"],

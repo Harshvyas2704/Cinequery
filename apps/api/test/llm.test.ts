@@ -142,6 +142,34 @@ describe("timeouts and bad output", () => {
   });
 });
 
+describe("cancelling", () => {
+  it("stops a running call when the caller's signal fires, without retrying", async () => {
+    const { backend, llm, records, sleeps } = setup();
+    backend.failNext({ type: "timeout" }); // never answers by itself
+    const controller = new AbortController();
+
+    const pending = errorOf(llm.generateJson({ ...generate, signal: controller.signal }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(backend.inFlight).toBe(1);
+    controller.abort();
+
+    expect((await pending).kind).toBe("cancelled");
+    expect(backend.inFlight).toBe(0);
+    expect(backend.calls).toHaveLength(1);
+    expect(sleeps).toEqual([]);
+    expect(records.map((record) => record.status)).toEqual(["cancelled"]);
+  });
+
+  it("makes no call at all when the signal has already fired", async () => {
+    const { backend, llm, records } = setup();
+
+    const error = await errorOf(llm.embed({ ...embed, signal: AbortSignal.abort() }));
+    expect(error.kind).toBe("cancelled");
+    expect(backend.calls).toHaveLength(0);
+    expect(records).toEqual([]);
+  });
+});
+
 describe("call log", () => {
   it("records stage, model, prompt version, tokens and latency", async () => {
     const { backend, llm, records } = setup();

@@ -5,6 +5,8 @@ export const RECOMMEND_QUERY_MIN_LENGTH = 3;
 export const RECOMMEND_QUERY_MAX_LENGTH = 300;
 export const RECOMMEND_LIMIT_MAX = 20;
 export const RECOMMEND_LIMIT_DEFAULT = 8;
+/** A reason is one sentence of at most 25 words; anything longer is cut. */
+export const RECOMMEND_WHY_MAX_LENGTH = 240;
 
 /** Body of POST /api/recommend. */
 export const recommendRequestSchema = z.object({
@@ -45,8 +47,8 @@ export const stageSchema = z.object({
 export const recommendationSchema = z.object({
   movie: movieSummarySchema,
   score: z.number(),
-  /** One sentence on why the movie fits. Arrives with the pick step (Phase 7). */
-  why: z.string().optional(),
+  /** One sentence on why the movie fits this request. Absent when the pick step gave none. */
+  why: z.string().max(RECOMMEND_WHY_MAX_LENGTH).optional(),
 });
 
 /**
@@ -92,6 +94,25 @@ export const recommendResponseSchema = z.object({
   }),
 });
 
+// POST /api/recommend/stream answers with Server-Sent Events, in this order:
+//   results  the movies in search order, as soon as the search is done
+//   picked   the final order with reasons; left out if the pick step did not succeed
+//   done     the final meta; always the last event of a request that worked
+//   error    instead of done, when the request could not be answered
+export const RECOMMEND_STREAM_EVENTS = ["results", "picked", "done", "error"] as const;
+
+export const resultsEventSchema = z.object({
+  requestId: z.string(),
+  results: z.array(recommendationSchema),
+  /** True when the pick step is about to run, so a `picked` event may follow. */
+  picking: z.boolean(),
+});
+export const pickedEventSchema = z.object({ results: z.array(recommendationSchema) });
+export const doneEventSchema = z.object({ meta: recommendResponseSchema.shape.meta });
+export const streamErrorEventSchema = z.object({ message: z.string() });
+
+export type RecommendStreamEvent = (typeof RECOMMEND_STREAM_EVENTS)[number];
+export type RecommendMeta = RecommendResponse["meta"];
 export type RecommendRequest = z.infer<typeof recommendRequestSchema>;
 export type ParsedRequest = z.infer<typeof parsedRequestSchema>;
 export type RelaxableFilter = (typeof RELAXABLE_FILTERS)[number];

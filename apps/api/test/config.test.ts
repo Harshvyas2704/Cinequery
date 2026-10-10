@@ -59,6 +59,16 @@ describe("loadConfig", () => {
           maxOutputTokens: 500,
           cacheTtlSeconds: 604800,
         },
+        pick: {
+          model: "gemini-3.5-flash-lite",
+          thinkingLevel: "minimal",
+          timeoutMs: 8000,
+          maxOutputTokens: 2000,
+          candidates: 30,
+          tagsPerCandidate: 5,
+          overviewChars: 300,
+          cacheTtlSeconds: 86400,
+        },
       },
       embed: {
         batchSize: 20,
