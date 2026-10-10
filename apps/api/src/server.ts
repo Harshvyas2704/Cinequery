@@ -7,6 +7,7 @@ import { createRedis } from "./cache/redis.js";
 import { loadConfigOrExit } from "./config/env.js";
 import { createPool } from "./db/pool.js";
 import { createGeminiProvider } from "./llm/index.js";
+import { picksSchema } from "./recommend/pick.js";
 
 const config = loadConfigOrExit();
 const logger = pino({ level: config.logLevel });
@@ -34,7 +35,23 @@ const parseCache = createJsonCache(redis, {
   logger,
 });
 
-const app = createApp({ config, pool, redis, llm, queryEmbeddingCache, parseCache, logger });
+const pickCache = createJsonCache(redis, {
+  name: "pick",
+  schema: picksSchema,
+  ttlSeconds: config.recommend.pick.cacheTtlSeconds,
+  logger,
+});
+
+const app = createApp({
+  config,
+  pool,
+  redis,
+  llm,
+  queryEmbeddingCache,
+  parseCache,
+  pickCache,
+  logger,
+});
 
 const server = app.listen(config.port, () => {
   logger.info(`API listening on http://localhost:${config.port}`);

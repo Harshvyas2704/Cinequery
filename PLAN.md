@@ -309,6 +309,7 @@ R = movie's vote_average, v = vote_count, C = mean vote_average, m = min_votes s
 - Structured output mode with a response schema.
 - Thinking at the lowest level the model allows for parse and pick.
 - `maxOutputTokens` set per stage from config.
+- Parse and pick both run on `gemini-3.5-flash-lite` with minimal thinking (D-045, D-047).
 - Cache by normalized query: parse result, query embedding, final result.
 - Log input and output tokens for every call. Track average tokens per search.
 
@@ -367,6 +368,7 @@ Return JSON only: {"picks":[{"id":number,"why":string}]}
 
 - Drop IDs not in the candidate list, and duplicates.
 - Fill missing slots from search order, without a reason.
+- A reply with no usable pick counts as a failed pick (D-048).
 - Log how many IDs were dropped (a quality signal).
 
 ### 7.5 Fallbacks (D-011)
@@ -384,6 +386,7 @@ Return JSON only: {"picks":[{"id":number,"why":string}]}
 - **Vague request** ("something good"): no useful filters. Return high weighted-rating popular movies and show suggestion chips.
 - **Prompt injection** ("ignore instructions and..."): delimiters in prompts, and only candidate IDs are accepted, so the worst case is poor picks.
 - **Hindi and Hinglish:** handled by English `searchText` (D-013).
+- **Client disconnects:** the pipeline stops, the running LLM call is aborted and logged as `cancelled`, nothing is cached (D-048).
 - **Too few results after filters:** relax in a fixed order (excluded tags, rating, runtime, years, then "all genres" to "any genre") and report which were relaxed in `meta` (D-046).
 
 ---

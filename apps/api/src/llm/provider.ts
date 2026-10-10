@@ -24,7 +24,7 @@ export type LlmCallRecord = {
   inputTokens: number | null;
   outputTokens: number | null;
   latencyMs: number;
-  status: "ok" | "timeout" | "rate_limited" | "invalid_output" | "error";
+  status: "ok" | "timeout" | "rate_limited" | "invalid_output" | "error" | "cancelled";
 };
 
 export type ProviderOptions = {
@@ -63,21 +63,32 @@ export function createLlmProvider(backend: LlmBackend, options: ProviderOptions)
 
   async function attemptOnce<T extends { usage: Usage }>(
     timeoutMs: number,
+    cancel: AbortSignal | undefined,
     run: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
     const controller = new AbortController();
     let timer: NodeJS.Timeout | undefined;
-    const timedOut = new Promise<never>((_, reject) => {
+    let onCancel: (() => void) | undefined;
+    // Either of these ends the attempt, and aborts the backend's request.
+    const stopped = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         controller.abort();
         reject(new LlmError("timeout", `Timed out after ${timeoutMs} ms`));
       }, timeoutMs);
+      onCancel = () => {
+        controller.abort();
+        reject(new LlmError("cancelled", "Cancelled by the caller"));
+      };
+      cancel?.addEventListener("abort", onCancel, { once: true });
     });
     try {
-      // The race means a backend that ignores the abort signal still times out.
-      return await Promise.race([run(controller.signal), timedOut]);
+      // The race means a backend that ignores the abort signal still stops here.
+      return await Promise.race([run(controller.signal), stopped]);
     } catch (error) {
       if (error instanceof LlmError) throw error;
+      if (cancel?.aborted) {
+        throw new LlmError("cancelled", "Cancelled by the caller", { cause: error });
+      }
       if (controller.signal.aborted) {
         throw new LlmError("timeout", `Timed out after ${timeoutMs} ms`, { cause: error });
       }
@@ -86,15 +97,19 @@ export function createLlmProvider(backend: LlmBackend, options: ProviderOptions)
       });
     } finally {
       clearTimeout(timer);
+      if (onCancel) cancel?.removeEventListener("abort", onCancel);
     }
   }
 
   async function call<T extends { usage: Usage }>(
     meta: { stage: string; model: string; promptVersion: string | null; requestId?: string },
     timeoutMs: number,
+    cancel: AbortSignal | undefined,
     run: (signal: AbortSignal) => Promise<T>,
   ): Promise<T & { latencyMs: number }> {
     for (let attempt = 0; ; attempt++) {
+      // Nothing is sent, so nothing is logged.
+      if (cancel?.aborted) throw new LlmError("cancelled", "Cancelled by the caller");
       const started = performance.now();
       const record = (status: LlmCallRecord["status"], usage?: Usage) =>
         options.recordCall({
@@ -109,7 +124,7 @@ export function createLlmProvider(backend: LlmBackend, options: ProviderOptions)
         });
 
       try {
-        const result = await attemptOnce(timeoutMs, run);
+        const result = await attemptOnce(timeoutMs, cancel, run);
         await record("ok", result.usage);
         return { ...result, latencyMs: Math.round(performance.now() - started) };
       } catch (error) {
@@ -135,6 +150,7 @@ export function createLlmProvider(backend: LlmBackend, options: ProviderOptions)
           requestId: input.requestId,
         },
         input.timeoutMs,
+        input.signal,
         (signal) => backend.generateJson(input, signal),
       ),
 
@@ -150,6 +166,7 @@ export function createLlmProvider(backend: LlmBackend, options: ProviderOptions)
           requestId: input.requestId,
         },
         input.timeoutMs,
+        input.signal,
         async (signal) => {
           const result = await backend.embed(input, signal);
           if (result.vectors.length !== input.texts.length) {

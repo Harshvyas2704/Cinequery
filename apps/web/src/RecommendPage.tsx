@@ -1,10 +1,12 @@
 import {
   RECOMMEND_QUERY_MAX_LENGTH,
   RECOMMEND_QUERY_MIN_LENGTH,
-  type RecommendResponse,
+  type Recommendation,
+  type RecommendMeta,
 } from "@cinequery/shared";
 import { type FormEvent, useEffect, useState } from "react";
-import { ApiError, recommendMovies } from "./api.ts";
+import { flushSync } from "react-dom";
+import { ApiError, streamRecommendations } from "./api.ts";
 import { MovieCard } from "./MovieCard.tsx";
 import {
   describeParsed,
@@ -22,13 +24,38 @@ const EXAMPLES = [
   "koi achhi suspense movie batao",
 ];
 
-// The answer to the latest request. `query` says which request it answers, so
-// "is a request running" is "the answer is not for the current query".
-type Outcome = { query: string; response: RecommendResponse | null; error: string | null };
+// The answer to the latest request, as far as it has arrived. `query` says
+// which request it answers, so "is a request running" is "the answer is not
+// for the current query".
+type Outcome = {
+  query: string;
+  /** Null when the request failed before any results arrived. */
+  results: Recommendation[] | null;
+  /** True while the AI is still choosing among the results shown. */
+  picking: boolean;
+  /** Arrives last, with how the answer was found. */
+  meta: RecommendMeta | null;
+  error: string | null;
+};
+
+/**
+ * Applies an update that reorders the cards, with the browser animating each
+ * card to its new place. Without animation where the browser cannot do it, or
+ * the user has asked for reduced motion.
+ */
+function withReorderAnimation(update: () => void) {
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reducedMotion || !("startViewTransition" in document)) {
+    update();
+    return;
+  }
+  // flushSync: the browser needs the new order in the page before it animates.
+  document.startViewTransition(() => flushSync(update));
+}
 
 const queryFromUrl = () => new URLSearchParams(window.location.search).get("q")?.trim() ?? "";
 
-function HowThisWasFound({ meta }: { meta: RecommendResponse["meta"] }) {
+function HowThisWasFound({ meta }: { meta: RecommendMeta }) {
   const rows = describeStages(meta);
   const understood = meta.parsed ? describeParsed(meta.parsed) : [];
   const relaxed = describeRelaxed(meta.relaxed);
@@ -92,13 +119,32 @@ export function RecommendPage() {
     if (!query) return;
 
     const controller = new AbortController();
-    recommendMovies(query, controller.signal)
-      .then((response) => setOutcome({ query, response, error: null }))
+    // Changes the answer to this request, unless a newer request has replaced it.
+    const update = (change: Partial<Outcome>) =>
+      setOutcome((current) => (current?.query === query ? { ...current, ...change } : current));
+
+    streamRecommendations(
+      query,
+      {
+        onResults: ({ results, picking }) =>
+          setOutcome({ query, results, picking, meta: null, error: null }),
+        onPicked: ({ results }) => withReorderAnimation(() => update({ results, picking: false })),
+        onDone: ({ meta }) => update({ meta, picking: false }),
+      },
+      controller.signal,
+    )
+      // The connection closed. If it did so early, nothing more is coming.
+      .then(() => update({ picking: false }))
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
         const message =
           error instanceof ApiError ? error.message : "Recommendations are not available right now.";
-        setOutcome({ query, response: null, error: message });
+        setOutcome((current) =>
+          // Results that are already on screen stay; only the picks are missing.
+          current?.query === query && current.results
+            ? { ...current, picking: false }
+            : { query, results: null, picking: false, meta: null, error: message },
+        );
       });
     return () => controller.abort();
   }, [query]);
@@ -114,7 +160,7 @@ export function RecommendPage() {
   };
 
   const shown = outcome && query !== "" ? outcome : null;
-  const results = shown?.response?.results ?? [];
+  const results = shown?.results ?? [];
 
   return (
     <>
@@ -155,16 +201,20 @@ export function RecommendPage() {
           </p>
         )}
 
-        {!loading && shown?.response && results.length === 0 && (
+        {!loading && shown?.results && results.length === 0 && (
           <p className="result-count">Nothing matched. Try describing it another way.</p>
         )}
 
-        {shown?.response && results.length > 0 && (
+        {!loading && shown?.picking && (
+          <p className="result-count">Choosing the best matches for you…</p>
+        )}
+
+        {results.length > 0 && (
           <>
-            {!loading && <HowThisWasFound meta={shown.response.meta} />}
+            {!loading && shown?.meta && <HowThisWasFound meta={shown.meta} />}
             <ul className={`grid${loading ? " stale" : ""}`}>
-              {results.map(({ movie }) => (
-                <MovieCard key={movie.id} movie={movie} />
+              {results.map(({ movie, why }) => (
+                <MovieCard key={movie.id} movie={movie} why={why} />
               ))}
             </ul>
           </>

@@ -22,6 +22,8 @@ export type GenerateJsonInput = {
   model?: string;
   /** minimal, low, medium or high, instead of the provider's default. */
   thinkingLevel?: string;
+  /** Aborted when the caller no longer wants the reply (the user left). */
+  signal?: AbortSignal;
 };
 
 export type EmbedInput = {
@@ -37,6 +39,8 @@ export type EmbedInput = {
   /** embed_query or embed_batch. Stored in llm_calls. */
   stage: string;
   requestId?: string;
+  /** Aborted when the caller no longer wants the reply (the user left). */
+  signal?: AbortSignal;
 };
 
 export interface LlmProvider {
@@ -63,7 +67,14 @@ export interface LlmBackend {
 }
 
 /** Matches the status column of llm_calls, apart from "ok". */
-export type LlmErrorKind = "timeout" | "rate_limited" | "invalid_output" | "server" | "error";
+export type LlmErrorKind =
+  | "timeout"
+  | "rate_limited"
+  | "invalid_output"
+  | "server"
+  | "error"
+  // The caller gave up (its AbortSignal fired). Never retried.
+  | "cancelled";
 
 export class LlmError extends Error {
   readonly kind: LlmErrorKind;

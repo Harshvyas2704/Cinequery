@@ -330,3 +330,118 @@ A repeated request costs no tokens: parse 1 ms, embed 0 ms, search 25 ms.
 In the first row only Sin City: A Dame to Kill For came from the meaning
 search: it is the one embedded action film from 2011 or later. The rest are
 keyword and tag matches from the whole catalog (D-041, D-046).
+
+## Picks, reasons and streaming (Phase 7)
+
+`POST /api/recommend` now has a fourth step, and a second route sends the same
+answer in pieces.
+
+```
+request
+  1. parse    request -> filters, tags, search text          (LLM, cached 7 days)
+  2. embed    search text -> vector                          (LLM, cached 7 days)
+  3. search   up to 30 movies from Postgres                  (no LLM)
+        -> the first `limit` of them can be shown now
+  4. pick     the model chooses `limit` of the 30, best first,
+              with one sentence each on why it fits           (LLM, cached 1 day)
+```
+
+The code is `apps/api/src/recommend/pipeline.ts`; the pick step's parts are
+`candidates.ts` (what the model sees), `pick.ts` (checking its reply) and
+`apps/api/src/llm/prompts/pick-v1.ts` (the prompt).
+
+### What the model sees
+
+The request between `<request>` tags, and one line per candidate:
+
+```
+id | title | year | genres | top 5 tags | overview cut to about 300 characters
+14517 | Looper | 2012 | Action, Thriller, Science Fiction | future, dystopic future, time loop, scifi, science fiction | In the futuristic action thriller Looper, time travel will be invented but…
+```
+
+Angle brackets are removed from the request and from every line, and `|` and
+line breaks from every field, so neither can break the layout. The prompt asks
+for at most `limit` picks, forbids spoilers, and asks for variety.
+
+### What happens to the reply
+
+The model returns `{"picks":[{"id":number,"why":string}]}`. Nothing in it is
+trusted (D-004, D-048):
+
+| In the reply                                | What happens                                  |
+| ------------------------------------------- | --------------------------------------------- |
+| An id that is a candidate                   | Kept, in the model's order, with its reason   |
+| An id that is not a candidate, or repeated  | Dropped, and counted in a log line            |
+| A pick without a whole-number id            | Dropped, and counted                          |
+| A reason over 240 characters, or on two lines | Put on one line and cut                     |
+| Fewer picks than `limit`                    | Filled up in search order, without a reason   |
+| No usable pick, a wrong shape, a timeout    | Search order, no reasons; stage `fallback`    |
+
+Title, year, poster and everything else shown for a movie come from the
+database row, never from the model.
+
+### The stream
+
+`POST /api/recommend/stream` takes the same body and answers with Server-Sent
+Events. The shapes are in `packages/shared/src/recommend.ts`.
+
+| Event     | When                                   | Data                                      |
+| --------- | -------------------------------------- | ----------------------------------------- |
+| `results` | As soon as the search is done          | `requestId`, `results` in search order, `picking` (whether picks will follow) |
+| `picked`  | When the pick succeeded                | `results` in the final order, with `why`  |
+| `done`    | Last, when the request worked          | `meta`, as in the non-streaming response  |
+| `error`   | Instead of `done`, if something broke  | A fixed message; details stay in the log  |
+
+A failed pick sends no `picked` and no `error`: `results` is then the final
+answer, and `done` reports the pick stage as `fallback`. An invalid request is
+answered with a normal 400 in the usual error shape, before any event.
+
+The web page (`apps/web/src/RecommendPage.tsx`) shows the cards from `results`
+with the line "Choosing the best matches for you…", then moves the cards to
+their new places when `picked` arrives. The move is animated with the browser's
+View Transitions, and not animated when the user has asked for reduced motion
+or the browser cannot do it. The browser's `EventSource` only sends GET
+requests, so the page reads the stream from `fetch` with a small parser
+(`apps/web/src/sse.ts`).
+
+### When the client goes away
+
+Both routes watch for the connection closing before the response is complete.
+An abort signal then runs through the pipeline: the LLM call in flight is
+aborted, the pipeline stops before its next step, nothing is cached, and the
+call is written to `llm_calls` with status `cancelled`. A database query that
+is already running is allowed to finish; the longest takes about 100 ms.
+
+### What a request costs now
+
+| Per uncached request  | Tokens in      | Tokens out | Time          |
+| --------------------- | -------------- | ---------- | ------------- |
+| Parse (Flash-Lite)    | about 505      | 60 to 110  | 1.3 to 1.8 s  |
+| Embed the search text | 10 to 20       | 0          | 0.6 to 0.9 s  |
+| Search (30 movies)    |                |            | 30 to 80 ms   |
+| Pick (Flash-Lite)     | 2,570 to 2,800 | 240 to 285 | 2.2 to 2.7 s  |
+
+About 3,600 tokens in total. A repeated request costs none and takes about
+65 ms.
+
+### Measured on real requests
+
+| Request                                           | First results on screen | Picks and reasons |
+| ------------------------------------------------- | ----------------------- | ----------------- |
+| heist movie with a clever plan (nothing cached)   | 2.4 s                   | 4.5 s             |
+| action movie with a twist at the end, not too old (parse and embedding cached) | 0.1 s | 2.6 s |
+| the same request again                            | 0.06 s                  | 0.07 s            |
+
+For the headline request the search order began with Sin City: A Dame to Kill
+For and ended with Pokémon Detective Pikachu. The picks dropped both and put
+The Guest and Looper first. For "heist movie with a clever plan" the model
+returned six picks; The Usual Suspects and Reservoir Dogs filled the last two
+places without a reason.
+
+Spoilers: the reasons for four requests about twists were read by hand (31
+from Flash-Lite, 24 from 3.8 Flash). They say that a film has a twist, which
+is what was asked for, and none states an ending. A few hint at where the
+surprise lies, for example "a completely unexpected mastermind" or "a major
+late-game betrayal". This is a small sample, not a guarantee; Phase 9 should
+count spoilers on the evaluation set.
+

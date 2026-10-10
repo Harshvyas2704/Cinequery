@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
+  doneEventSchema,
   errorResponseSchema,
   parsedRequestSchema,
+  pickedEventSchema,
   recommendResponseSchema,
+  resultsEventSchema,
 } from "@cinequery/shared";
 import type { Redis } from "ioredis";
 import type pg from "pg";
@@ -20,7 +23,8 @@ import { createFakeBackend, type FakeBackend, fakeEmbedding } from "../src/llm/f
 import { createLlmProvider } from "../src/llm/provider.js";
 import type { GenerateJsonInput, LlmProvider } from "../src/llm/types.js";
 import { normalizeQuery } from "../src/recommend/normalize.js";
-import { loadTestConfig, silentLogger, startApp, waitForRedis } from "./helpers.js";
+import { picksSchema } from "../src/recommend/pick.js";
+import { loadTestConfig, silentLogger, startApp, testAppConfig, waitForRedis } from "./helpers.js";
 
 const DIMENSIONS = 768;
 const MODEL = "fake-embedding";
@@ -159,11 +163,23 @@ async function seed(options: { embeddings: boolean } = { embeddings: true }) {
   );
 }
 
-async function start(options: { llm?: LlmProvider | null } = {}) {
+async function start(
+  options: { llm?: LlmProvider | null; pickTimeoutMs?: number; pool?: pg.Pool } = {},
+) {
   const prefix = `test-${randomUUID()}`; // clean caches for every test
   app = await startApp({
-    pool,
+    pool: options.pool ?? pool,
     redis,
+    config: {
+      ...testAppConfig,
+      recommend: {
+        ...testAppConfig.recommend,
+        pick: {
+          ...testAppConfig.recommend.pick,
+          timeoutMs: options.pickTimeoutMs ?? testAppConfig.recommend.pick.timeoutMs,
+        },
+      },
+    },
     llm: options.llm === undefined ? llm : options.llm,
     now: () => new Date("2026-06-15T12:00:00Z"),
     queryEmbeddingCache: createQueryEmbeddingCache(redis, {
@@ -176,6 +192,13 @@ async function start(options: { llm?: LlmProvider | null } = {}) {
     parseCache: createJsonCache(redis, {
       name: "parse",
       schema: parsedRequestSchema,
+      ttlSeconds: 60,
+      prefix,
+      logger: silentLogger,
+    }),
+    pickCache: createJsonCache(redis, {
+      name: "pick",
+      schema: picksSchema,
       ttlSeconds: 60,
       prefix,
       logger: silentLogger,
@@ -199,7 +222,14 @@ async function recommend(query: string, limit?: number) {
   return {
     ...body,
     titles: body.results.map((result) => result.movie.title),
-    stages: Object.fromEntries(body.meta.stages.map((stage) => [stage.name, stage.status])),
+    // The steps up to the search. The pick step has its own tests below; where
+    // a test scripts no picks, it falls back and the search order is kept.
+    stages: Object.fromEntries(
+      body.meta.stages
+        .filter((stage) => stage.name !== "pick")
+        .map((stage) => [stage.name, stage.status]),
+    ),
+    pick: body.meta.stages.find((stage) => stage.name === "pick")?.status,
   };
 }
 
@@ -217,6 +247,24 @@ function modelSays(reply: Record<string, unknown>) {
 
 const calls = (method: "embed" | "generateJson") =>
   backend.calls.filter((call) => call.method === method);
+
+const callsOf = (stage: "parse" | "pick") =>
+  calls("generateJson")
+    .map((call) => call.input as GenerateJsonInput)
+    .filter((input) => input.stage === stage);
+
+/** The database id of a movie in the test catalog. */
+async function idOf(title: string): Promise<number> {
+  const { rows } = await pool.query<{ id: number }>("SELECT id FROM movies WHERE title = $1", [title]);
+  return rows[0]!.id;
+}
+
+/** Scripts what the model will answer to the next pick call. */
+async function modelPicks(...picks: [title: string, why: string][]) {
+  backend.respondWith({
+    picks: await Promise.all(picks.map(async ([title, why]) => ({ id: await idOf(title), why }))),
+  });
+}
 
 beforeAll(async () => {
   const config = loadTestConfig();
@@ -302,7 +350,7 @@ describe("POST /api/recommend: understanding the request", () => {
     const { requestId } = await recommend("a prison escape");
 
     const { rows } = await pool.query(
-      "SELECT request_id, stage, model, prompt_version, status FROM llm_calls ORDER BY id",
+      "SELECT request_id, stage, model, prompt_version, status FROM llm_calls WHERE stage <> 'pick' ORDER BY id",
     );
     expect(rows).toEqual([
       { request_id: requestId, stage: "parse", model: "fake-parse", prompt_version: "parse-v1", status: "ok" },
@@ -426,16 +474,19 @@ describe("POST /api/recommend: cache", () => {
   it("answers the same request the second time without calling the LLM", async () => {
     await start();
     modelSays({ searchText: "space movie about loneliness" });
+    await modelPicks(["Solaris", "A lonely station above a strange planet."]);
     const first = await recommend("space movie about loneliness");
     const second = await recommend("Space movie about   LONELINESS");
 
     expect(first.meta.cached).toBe(false);
     expect(second.meta.cached).toBe(true);
     expect(second.stages).toEqual({ parse: "ok", embed: "ok", search: "ok" });
-    expect(second.titles).toEqual(first.titles);
+    expect(second.pick).toBe("ok");
+    expect(second.results).toEqual(first.results);
+    expect(second.results[0]!.why).toBe("A lonely station above a strange planet.");
     expect(second.meta.parsed).toEqual(first.meta.parsed);
     expect(second.requestId).not.toBe(first.requestId);
-    expect(calls("generateJson")).toHaveLength(1);
+    expect(calls("generateJson")).toHaveLength(2); // one parse, one pick
     expect(calls("embed")).toHaveLength(1);
   });
 
@@ -446,7 +497,7 @@ describe("POST /api/recommend: cache", () => {
     modelSays({ genres: ["Drama"], searchText: "a prison escape" });
     const second = await recommend("drama about escaping jail");
 
-    expect(calls("generateJson")).toHaveLength(2);
+    expect(callsOf("parse")).toHaveLength(2);
     expect(calls("embed")).toHaveLength(1);
     // One step still called the LLM, so the request as a whole was not cached.
     expect(second.meta.cached).toBe(false);
@@ -535,7 +586,12 @@ describe("POST /api/recommend: basics", () => {
     expect(body.results).toHaveLength(3);
     expect(body.results[0]!.score).toBeGreaterThan(body.results[1]!.score);
     expect(body.requestId).toMatch(/^[0-9a-f-]{36}$/);
-    expect(body.meta.stages.map((stage) => stage.name)).toEqual(["parse", "embed", "search"]);
+    expect(body.meta.stages.map((stage) => stage.name)).toEqual([
+      "parse",
+      "embed",
+      "search",
+      "pick",
+    ]);
     expect(body.results[0]!.why).toBeUndefined();
   });
 
@@ -658,5 +714,282 @@ describe("JSON cache", () => {
 describe("normalizeQuery", () => {
   it("trims, lower-cases and collapses spaces", () => {
     expect(normalizeQuery("  Space   MOVIE\tabout\nLoneliness ")).toBe("space movie about loneliness");
+  });
+});
+
+describe("POST /api/recommend: picks and reasons", () => {
+  // "fast action movie" finds these four at the same distance; the rating orders them.
+  const SEARCH_ORDER = ["Quiet Nineties", "Last Stand", "Speed Chase", "Dilli Express"];
+  // With the Action genre as a filter, only these are candidates.
+  const ACTION_ORDER = ["Last Stand", "Speed Chase", "Dilli Express"];
+
+  it("returns the model's order with its reasons", async () => {
+    await start();
+    modelSays({ searchText: "fast action movie" });
+    await modelPicks(
+      ["Speed Chase", "A bus that cannot slow down."],
+      ["Dilli Express", "  Non-stop   chases\nacross Delhi. "],
+    );
+    const body = await recommend("something fast", 2);
+
+    expect(body.pick).toBe("ok");
+    expect(body.results.map(({ movie, why }) => [movie.title, why])).toEqual([
+      ["Speed Chase", "A bus that cannot slow down."],
+      ["Dilli Express", "Non-stop chases across Delhi."],
+    ]);
+  });
+
+  it("can pick a movie that the search ranked below the first `limit`", async () => {
+    await start();
+    modelSays({ searchText: "fast action movie" });
+    await modelPicks(["Dilli Express", "Fast."]);
+    expect((await recommend("something fast", 1)).titles).toEqual(["Dilli Express"]);
+  });
+
+  it("shows the model compact candidate lines and the request between tags", async () => {
+    await start();
+    modelSays({ tags: ["twist ending"], searchText: "tense thriller" });
+    await modelPicks(["Twisty Thriller", "Tense."]);
+    await recommend("Tense <b>thriller</b>", 4);
+
+    const input = callsOf("pick")[0]!;
+    expect(input).toMatchObject({ promptVersion: "pick-v1", model: "fake-pick", thinkingLevel: "low" });
+    expect(input.system).toContain("Pick the 4 movies");
+    expect(input.system).toContain("Never reveal plot twists");
+    // Angle brackets are removed, so the request cannot close its own tag.
+    expect(input.prompt).toContain("<request>tense  b thriller /b </request>");
+    expect(input.prompt).toContain(
+      `${await idOf("Twisty Thriller")} | Twisty Thriller | 2000 | Thriller | plot twist | A quiet story about ordinary people.`,
+    );
+    const lines = input.prompt.split("<candidates>\n")[1]!.split("\n</candidates>")[0]!.split("\n");
+    expect(lines.length).toBeGreaterThan(4); // more candidates than will be shown
+    expect(lines.length).toBeLessThanOrEqual(30);
+  });
+
+  it("drops ids that are not candidates, and fills up in search order without a reason", async () => {
+    await start();
+    modelSays({ genres: ["Action"], searchText: "fast action movie" });
+    backend.respondWith({
+      picks: [
+        { id: 999_999, why: "A film that does not exist." },
+        { id: await idOf("Speed Chase"), why: "Fast." },
+        { id: await idOf("Speed Chase"), why: "Fast, again." },
+        // In the catalog, but not a candidate of this request.
+        { id: await idOf("Inception"), why: "Famous." },
+        { id: "7", why: "Not a number." },
+      ],
+    });
+    const body = await recommend("something fast", 3);
+
+    expect(body.pick).toBe("ok");
+    expect(body.results.map(({ movie, why }) => [movie.title, why])).toEqual([
+      ["Speed Chase", "Fast."],
+      ["Last Stand", undefined],
+      ["Dilli Express", undefined],
+    ]);
+  });
+
+  it("keeps the search order, without reasons, when the pick call times out", async () => {
+    await start();
+    modelSays({ searchText: "fast action movie" });
+    backend.respondWithFailure({ type: "timeout" });
+    const body = await recommend("something fast", 4);
+
+    expect(body.pick).toBe("fallback");
+    expect(body.titles).toEqual(SEARCH_ORDER);
+    expect(body.results.every((result) => result.why === undefined)).toBe(true);
+    const { rows } = await pool.query("SELECT status FROM llm_calls WHERE stage = 'pick'");
+    expect(rows).toEqual([{ status: "timeout" }]);
+  });
+
+  it("does the same when the reply is unusable, and asks again next time", async () => {
+    await start();
+    modelSays({ genres: ["Action"], searchText: "fast action movie" });
+    backend.respondWith({ picks: "none" });
+    expect(await recommend("something fast", 3)).toMatchObject({ pick: "fallback", titles: ACTION_ORDER });
+
+    // Parse and embedding are cached by now; only the pick is asked for again.
+    backend.respondWith({ picks: [{ id: 999_999, why: "Made up." }] });
+    expect(await recommend("something fast", 3)).toMatchObject({ pick: "fallback", titles: ACTION_ORDER });
+
+    await modelPicks(["Dilli Express", "Fast."]);
+    const third = await recommend("something fast", 3);
+    expect(third.pick).toBe("ok");
+    expect(third.titles).toEqual(["Dilli Express", "Last Stand", "Speed Chase"]);
+    expect(callsOf("pick")).toHaveLength(3);
+  });
+
+  it("skips the pick when there is no LLM or nothing to choose from", async () => {
+    await start({ llm: null });
+    expect((await recommend("fast action movie")).pick).toBe("skipped");
+    await app!.close();
+
+    await seed({ embeddings: false });
+    await start();
+    modelSays({ searchText: "xylophone" });
+    const body = await recommend("xylophone");
+    expect(body.results).toEqual([]);
+    expect(body.pick).toBe("skipped");
+    expect(callsOf("pick")).toHaveLength(0);
+  });
+});
+
+describe("POST /api/recommend/stream", () => {
+  type StreamEvent = { event: string; data: unknown };
+
+  const parseEvents = (text: string): StreamEvent[] =>
+    text
+      .split("\n\n")
+      .filter((block) => block !== "")
+      .map((block) => ({
+        event: /^event: (.*)$/m.exec(block)![1]!,
+        data: JSON.parse(/^data: (.*)$/m.exec(block)![1]!) as unknown,
+      }));
+
+  const open = (body: unknown, signal?: AbortSignal) =>
+    fetch(`${app!.url}/api/recommend/stream`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
+
+  async function stream(body: unknown) {
+    const response = await open(body);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    const events = parseEvents(await response.text());
+    return { events, names: events.map((event) => event.event) };
+  }
+
+  const titlesOf = (results: { movie: { title: string } }[]) => results.map((result) => result.movie.title);
+
+  it("sends the search results, then the picks, then done", async () => {
+    await start();
+    modelSays({ genres: ["Action"], searchText: "fast action movie" });
+    await modelPicks(["Dilli Express", "Fast."], ["Speed Chase", "Faster."]);
+    const { events, names } = await stream({ query: "something fast", limit: 2 });
+
+    expect(names).toEqual(["results", "picked", "done"]);
+    const results = resultsEventSchema.parse(events[0]!.data);
+    expect(titlesOf(results.results)).toEqual(["Last Stand", "Speed Chase"]);
+    expect(results.picking).toBe(true);
+    expect(results.results.every((result) => result.why === undefined)).toBe(true);
+
+    const picked = pickedEventSchema.parse(events[1]!.data);
+    expect(picked.results.map(({ movie, why }) => [movie.title, why])).toEqual([
+      ["Dilli Express", "Fast."],
+      ["Speed Chase", "Faster."],
+    ]);
+
+    const { meta } = doneEventSchema.parse(events[2]!.data);
+    expect(meta.stages.map((stage) => [stage.name, stage.status])).toEqual([
+      ["parse", "ok"],
+      ["embed", "ok"],
+      ["search", "ok"],
+      ["pick", "ok"],
+    ]);
+    expect(meta.parsed?.genres).toEqual(["Action"]);
+    const { rows } = await pool.query("SELECT DISTINCT request_id FROM llm_calls");
+    expect(rows).toEqual([{ request_id: results.requestId }]);
+  });
+
+  it("sends the search results before the pick call has answered", async () => {
+    await start({ pickTimeoutMs: 300 });
+    modelSays({ searchText: "fast action movie" });
+    backend.respondWithFailure({ type: "timeout" });
+    const response = await open({ query: "something fast" });
+    const reader = response.body!.getReader();
+
+    const first = new TextDecoder().decode((await reader.read()).value);
+    expect(parseEvents(first).map((event) => event.event)).toEqual(["results"]);
+    // The pick call starts after the results were sent, and is still running.
+    await expect.poll(() => backend.inFlight, { timeout: 2000 }).toBe(1);
+    await reader.cancel();
+  });
+
+  it("sends no picks and no error when the pick step fails", async () => {
+    await start();
+    modelSays({ searchText: "fast action movie" });
+    backend.respondWith({ nonsense: true });
+    const { events, names } = await stream({ query: "something fast" });
+
+    expect(names).toEqual(["results", "done"]);
+    const { meta } = doneEventSchema.parse(events[1]!.data);
+    expect(meta.stages.at(-1)).toMatchObject({ name: "pick", status: "fallback" });
+  });
+
+  it("says that no picks will follow when there is no LLM", async () => {
+    await start({ llm: null });
+    const { events, names } = await stream({ query: "heist" });
+
+    expect(names).toEqual(["results", "done"]);
+    expect(resultsEventSchema.parse(events[0]!.data).picking).toBe(false);
+  });
+
+  it("answers an invalid request with a normal 400, not a stream", async () => {
+    await start();
+    const response = await open({ query: "hi" });
+    expect(response.status).toBe(400);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(errorResponseSchema.parse(await response.json()).error.code).toBe("validation_error");
+  });
+
+  it("sends an error event with a safe message when the database fails", async () => {
+    const failing = () => Promise.reject(new Error("password authentication failed for user admin"));
+    await start({ llm: null, pool: { query: failing, connect: failing } as unknown as pg.Pool });
+    const response = await open({ query: "heist" });
+    const text = await response.text();
+
+    expect(parseEvents(text)).toEqual([
+      { event: "error", data: { message: "Recommendations are not available right now." } },
+    ]);
+    expect(text).not.toContain("password");
+  });
+
+  it("stops the pick call and cleans up when the client disconnects", async () => {
+    await start({ pickTimeoutMs: 30_000 });
+    modelSays({ searchText: "fast action movie" });
+    backend.respondWithFailure({ type: "timeout" }); // the pick call never answers
+    const controller = new AbortController();
+    const response = await open({ query: "something fast" }, controller.signal);
+    const reader = response.body!.getReader();
+    await reader.read(); // the results event
+    await expect.poll(() => backend.inFlight, { timeout: 2000 }).toBe(1);
+
+    controller.abort();
+
+    // Long before the 30 second timeout, the call is stopped and logged.
+    await expect.poll(() => backend.inFlight, { timeout: 2000 }).toBe(0);
+    await expect
+      .poll(async () => (await pool.query("SELECT status FROM llm_calls WHERE stage = 'pick'")).rows, {
+        timeout: 2000,
+      })
+      .toEqual([{ status: "cancelled" }]);
+
+    // The server is still healthy, and nothing half-done was cached.
+    await modelPicks(["Dilli Express", "Fast."]);
+    const { names } = await stream({ query: "something fast" });
+    expect(names).toEqual(["results", "picked", "done"]);
+    expect(callsOf("pick")).toHaveLength(2);
+    // afterEach closes the server, which only finishes once every connection has closed.
+  });
+
+  it("stops the non-streaming request too", async () => {
+    await start({ pickTimeoutMs: 30_000 });
+    modelSays({ searchText: "fast action movie" });
+    backend.respondWithFailure({ type: "timeout" });
+    const controller = new AbortController();
+    const pending = fetch(`${app!.url}/api/recommend`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "something fast" }),
+      signal: controller.signal,
+    }).catch((error: unknown) => error);
+    await expect.poll(() => backend.inFlight, { timeout: 2000 }).toBe(1);
+
+    controller.abort();
+    await pending;
+    await expect.poll(() => backend.inFlight, { timeout: 2000 }).toBe(0);
   });
 });

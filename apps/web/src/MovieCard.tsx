@@ -1,6 +1,6 @@
 import type { MovieSummary } from "@cinequery/shared";
 
-export function MovieCard({ movie }: { movie: MovieSummary }) {
+export function MovieCard({ movie, why }: { movie: MovieSummary; why?: string }) {
   const facts = [
     movie.releaseYear,
     movie.runtimeMinutes ? `${movie.runtimeMinutes} min` : null,
@@ -8,7 +8,8 @@ export function MovieCard({ movie }: { movie: MovieSummary }) {
   ].filter(Boolean);
 
   return (
-    <li className="movie">
+    // The name lets the browser animate a card to its new place when the list is reordered.
+    <li className="movie" style={{ viewTransitionName: `movie-${movie.id}` }}>
       {movie.posterUrl ? (
         <img
           className="poster"
@@ -35,6 +36,7 @@ export function MovieCard({ movie }: { movie: MovieSummary }) {
           {facts.join(" · ")}
         </p>
         <p className="genres">{movie.genres.join(", ")}</p>
+        {why && <p className="why">{why}</p>}
         <p className="overview">{movie.overview}</p>
       </div>
     </li>
