@@ -386,6 +386,8 @@ Return JSON only: {"picks":[{"id":number,"why":string}]}
 - **Vague request** ("something good"): no useful filters. Return high weighted-rating popular movies and show suggestion chips.
 - **Prompt injection** ("ignore instructions and..."): delimiters in prompts, and only candidate IDs are accepted, so the worst case is poor picks.
 - **Hindi and Hinglish:** handled by English `searchText` (D-013).
+- **Over the rate limit:** 429 with `Retry-After`; nothing is searched and no token is spent (D-049).
+- **Redis down:** rate limits let requests through; the token budget keeps counting in the process (D-049).
 - **Client disconnects:** the pipeline stops, the running LLM call is aborted and logged as `cancelled`, nothing is cached (D-048).
 - **Too few results after filters:** relax in a fixed order (excluded tags, rating, runtime, years, then "all genres" to "any genre") and report which were relaxed in `meta` (D-046).
 
@@ -406,9 +408,14 @@ apps/
       search/        full-text, vector, tags, scoring
       recommend/     the pipeline: parse, search, pick, fallbacks
       cache/
-      ratelimit/
+      limits/        rate limit, token budget, LLM concurrency
+      stats/         request log and GET /api/stats
+      eval/          the evaluation: checks, runner, CLI (`pnpm eval`)
+      http/
       routes/
-      server.ts
+      server.ts      the API process
+      worker.ts      the background worker (retention)
+    scripts/         loadtest.ts
     test/
   web/
     src/
@@ -417,9 +424,8 @@ packages/
 scripts/
   prepare-data.sql   DuckDB preparation
 eval/
-  queries.json
-  run.ts
-  results/
+  queries.json       the queries and their checks
+  results/           one file per run (the code is in apps/api/src/eval)
 data/                gitignored
   raw/
   clean/
@@ -711,7 +717,7 @@ Tasks:
       "genresInclude": ["Action"],
       "minYear": 2005,
       "tagsAny": ["twist ending"],
-      "anyOfTmdbIds": [],
+      "anyOfMovies": [{ "tmdbId": 59967, "title": "Looper" }],
       "noSpoilerWords": ["turns out", "was dead", "is actually"]
     }
   }

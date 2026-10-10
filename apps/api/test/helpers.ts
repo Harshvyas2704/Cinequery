@@ -4,6 +4,7 @@ import type { Redis } from "ioredis";
 import { pino } from "pino";
 import { type AppDeps, createApp } from "../src/app.js";
 import { type Config, loadConfig, loadEnvFile } from "../src/config/env.js";
+import { unlimitedBudget } from "../src/limits/budget.js";
 import type { HealthDeps } from "../src/routes/health.js";
 
 export const silentLogger = pino({ level: "silent" });
@@ -67,9 +68,13 @@ export const testAppConfig: AppDeps["config"] = {
     },
   },
   llm: { embeddingModel: "fake-embedding" },
+  http: { trustProxyHops: 0, bodyLimitBytes: 10_000 },
+  rateLimit: { recommendMax: 1000, apiMax: 1000 },
+  adminToken: undefined,
 };
 
 const noCache = { get: async () => null, set: async () => {} };
+const noRateLimit = { hit: async () => ({ allowed: true, remaining: 1, retryAfterMs: 0 }) };
 
 export async function startApp(deps: {
   // Health tests pass a fake with only the query they need; other tests pass a real pool.
@@ -80,6 +85,10 @@ export async function startApp(deps: {
   queryEmbeddingCache?: AppDeps["queryEmbeddingCache"];
   parseCache?: AppDeps["parseCache"];
   pickCache?: AppDeps["pickCache"];
+  rateLimiter?: AppDeps["rateLimiter"];
+  budget?: AppDeps["budget"];
+  recordRequest?: AppDeps["recordRequest"];
+  logger?: AppDeps["logger"];
   now?: AppDeps["now"];
 }): Promise<{ url: string; close: () => Promise<void> }> {
   const app = createApp({
@@ -88,6 +97,9 @@ export async function startApp(deps: {
     queryEmbeddingCache: noCache,
     parseCache: noCache,
     pickCache: noCache,
+    rateLimiter: noRateLimit,
+    budget: unlimitedBudget,
+    recordRequest: async () => {},
     ...deps,
     config: deps.config ?? testAppConfig,
     pool: deps.pool as AppDeps["pool"],

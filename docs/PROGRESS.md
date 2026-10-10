@@ -13,8 +13,8 @@ The plan is in `PLAN.md`; the reasons behind choices are in `DECISIONS.md`.
 - [x] Phase 5: Semantic search
 - [x] Phase 6: Query understanding (parse)
 - [x] Phase 7: Pick, reasons and streaming
-- [ ] Phase 8: Production concerns
-- [ ] Phase 9: Evaluation
+- [x] Phase 8: Production concerns
+- [ ] Phase 9: Evaluation (built; three of the four runs wait for the embedding quota)
 - [ ] Phase 10: LLM tag fallback (only if evaluation shows a need)
 - [ ] Phase 11: Deploy V1
 
@@ -617,3 +617,165 @@ Times and tokens are in `docs/ARCHITECTURE.md`.
   concurrent LLM calls: Phase 8.
 - Sending each pick as the model writes it: not planned (D-048).
 - Browser tests of the page. The stream parser and the wording have unit tests.
+
+## Phase 8: Production concerns
+
+Done on 2026-10-10.
+
+### Built
+
+- Request id on every request (`apps/api/src/http/requestId.ts`): in the
+  `x-request-id` header, logs, `llm_calls`, `request_log`, recommend responses
+  and error bodies.
+- Rate limit per client IP, sliding window in Redis
+  (`apps/api/src/limits/rateLimit.ts`): 429 with `Retry-After`.
+- Daily token budget in Redis with soft and hard levels
+  (`apps/api/src/limits/budget.ts`); the pipeline skips the pick at soft and
+  every LLM call at hard, and reports it in `meta.budget`.
+- Limit on concurrent LLM calls (`apps/api/src/limits/semaphore.ts`), built
+  into the provider wrapper.
+- Input limits: unknown fields and unknown search parameters refused, body
+  limited to 10 KB.
+- CORS for `WEB_ORIGIN` only and helmet's security headers were already in
+  place; both now have tests.
+- Graceful shutdown of the API and the worker (`apps/api/src/shutdown.ts`).
+- Table `request_log` (migration `0005_request_log.sql`) and
+  `GET /api/stats` behind `ADMIN_TOKEN`.
+- Worker process `pnpm worker` with the daily retention job
+  (`apps/api/src/jobs/retention.ts`, `apps/api/src/worker.ts`).
+- Secret headers blanked in request logs (`apps/api/src/logger.ts`).
+- Load test `pnpm loadtest` (`apps/api/scripts/loadtest.ts`).
+- Web: shows the API's message on a 429, and says when a step was skipped
+  because the budget is used up.
+
+### How to run
+
+```bash
+pnpm db:migrate   # applies 0005_request_log.sql
+pnpm worker       # the retention job; leave it running next to the API
+pnpm loadtest     # optional: --seconds 20 --clients 20 --llm-ms 50 --new-share 0.3
+```
+
+### Decided
+
+- Everything above, with defaults, is D-049. The user chose the Postgres table
+  for the request log, and a budget of 1,000,000 tokens a day (soft 800,000)
+  with the condition that it stays inside the free tier.
+
+### Checked
+
+| Check                                                | Result                                       |
+| ---------------------------------------------------- | -------------------------------------------- |
+| `pnpm lint`, `pnpm typecheck`, `pnpm build`          | Pass                                         |
+| `pnpm test`                                          | 278 tests pass (17 shared, 234 API, 27 web)  |
+| Rate limit: window slides, 429, `Retry-After`        | Pass                                         |
+| Rate limit: per IP only behind a trusted proxy       | Pass                                         |
+| Budget levels: ok, soft, hard; reset at midnight UTC | Pass                                         |
+| Budget in the pipeline; caches still used            | Pass                                         |
+| Rate limit and budget with Redis down                | Pass                                         |
+| Concurrency limit                                    | Pass                                         |
+| Request id in header, body, `llm_calls`, `request_log` | Pass                                       |
+| Unknown field 400, large body 413                    | Pass                                         |
+| Stats: 404 without a token, 401 with a wrong one     | Pass                                         |
+| Stats numbers                                        | Pass                                         |
+| Admin token not in the log                           | Pass                                         |
+| Retention: only rows older than 30 days; as a job    | Pass                                         |
+| Shutdown: open request finishes; timeout cuts off    | Pass                                         |
+| Real server: SIGTERM                                 | Exit code 0, "shutdown complete"             |
+| Real worker: start, schedule, SIGTERM                | Exit code 0                                  |
+| Load test, 20 clients, 20 s                          | 1,603 requests, 0 errors, p50 14 ms, p95 767 ms, flat over the run |
+| Load test, over the limit                            | 20 answered, 80 refused with 429, 0 other    |
+
+No request to the real Gemini API was made in this phase.
+
+### Things to know for later phases
+
+- **The free-tier quota could not be checked.** Google shows a project's
+  requests-per-minute and per-day limits only in AI Studio
+  (https://aistudio.google.com/rate-limit). The token budget cannot exceed a
+  free tier's cost (nothing is billed), but if the quota is lower than about
+  830 LLM calls a day, requests will start falling back before the budget is
+  reached. Compare the quota shown there with `TOKEN_BUDGET_HARD`.
+- **Set `TRUST_PROXY_HOPS` when deploying** (Phase 11). At 0 behind a proxy,
+  all users share one rate limit.
+- **Set `ADMIN_TOKEN` to use the stats.** It is not set in `.env`.
+- **New requests under load wait for LLM slots.** In the load test a new
+  request took 770 ms with a 50 ms fake LLM. With the real one (about 2 s a
+  call) and 4 slots, the API can start about 2 LLM calls a second.
+- **The worker left a schedule in the local Redis** (`bull:maintenance:*`).
+  It does nothing unless `pnpm worker` is running.
+- The stats' LLM totals include embedding batches run the same day.
+- The evaluation script (Phase 9) should send its own `x-request-id` values
+  and will be subject to the rate limit unless it calls the pipeline directly.
+
+### Deferred
+
+- A dashboard for the stats: not planned for V1.
+- Rate limits per user instead of per IP: needs accounts (V2).
+- A load test from a second machine against a deployed API: Phase 11.
+
+## Phase 9: Evaluation
+
+**Not finished.** Built and tested on 2026-10-10; one of the four runs is done.
+
+### Built
+
+- `eval/queries.json`: 26 queries with computable checks and 133 expected
+  movies, each verified to be in the catalog. Four are Hindi or Hinglish, two
+  are vague, one is a prompt injection.
+- The pipeline can leave steps out (`skip` in `apps/api/src/recommend/pipeline.ts`),
+  which is what the four modes are.
+- `apps/api/src/eval`: the file's schema, the checks, the runner and the
+  command line.
+- `pnpm eval --mode fulltext|semantic|parsed|full|all`, with `--delay-ms`,
+  `--only`, `--check` (validate the file against the catalog, no calls) and
+  `--report` (the comparison table as Markdown).
+- Each run is saved to `eval/results/<date>-<mode>.json` with the prompt
+  versions, the config, every answer and the summary.
+- A run stops and saves nothing when three queries in a row have a failed LLM
+  step.
+
+### Decided
+
+- How quality is measured: modes, checks, measures, no caches (D-050).
+- The user chose to run with my draft of the queries and review it afterwards.
+
+### Checked
+
+| Check                                       | Result                                       |
+| ------------------------------------------- | -------------------------------------------- |
+| `pnpm lint`, `pnpm typecheck`, `pnpm build` | Pass                                         |
+| `pnpm test`                                 | 296 tests pass (17 shared, 252 API, 27 web)  |
+| `pnpm eval --check`                         | 26 queries, 133 expected movies, all in the catalog; 47 have an embedding |
+| `pnpm eval --mode fulltext`                 | Done: constraints 46%, hits 30% (7 of 23), tags 41%, p50 19 ms |
+| `pnpm eval --mode semantic`                 | **Not done.** 21 of 26 embeddings were refused: quota used up |
+| `pnpm eval --mode parsed`, `--mode full`    | **Not run**, for the same reason             |
+
+### What blocked the run
+
+The free tier allows 1,000 embedded texts a day (D-041). Today's were used by
+the 980 movies and about 20 requests. The API answered "Quota exceeded for
+metric embed_content_free_tier_requests, limit: 1000" and asked to retry in
+about 6 hours. I deleted the semantic result that this produced, because its
+numbers were those of the keyword fallback.
+
+### To finish this phase
+
+1. Wait for the quota to reset, then run `pnpm eval --mode all` (about 10
+   minutes; 78 embeddings, 52 parse calls, 26 pick calls).
+2. Run `pnpm eval --report` and put the table in `docs/ARCHITECTURE.md` (it
+   has the table with "not run" in three columns) and in the README.
+3. Review `eval/queries.json`, above all the expected movies. Rerun after
+   changes.
+4. Decide from the numbers whether Phase 10 (LLM tags) is needed.
+
+### Things to know
+
+- **Do not embed more movies on a day the evaluation should run**, and the
+  other way round: both use the same 1,000.
+- Hit rate depends on which movies I listed as expected. 86 of the 133 have no
+  embedding, so search by meaning cannot find them; the keyword fill can.
+- The spoiler check only finds the listed phrases.
+- Requests of the evaluation are in `llm_calls` with ids starting `eval-`, and
+  count toward the API's token budget and the stats of the day.
+

@@ -44,6 +44,8 @@ export async function searchMovies(
     if (response.status === 400 && details?.length) {
       throw new ApiError(details.map((detail) => detail.message).join(". "));
     }
+    // "Too many requests. Try again in N seconds." is written for the user.
+    if (response.status === 429 && error.success) throw new ApiError(error.data.error.message);
     throw new Error(`Search failed with status ${response.status}`);
   }
   return searchResponseSchema.parse(body);
@@ -82,6 +84,8 @@ export async function streamRecommendations(
     if (response.status === 400 && details?.length) {
       throw new ApiError(details.map((detail) => detail.message).join(". "));
     }
+    // "Too many requests. Try again in N seconds." is written for the user.
+    if (response.status === 429 && error.success) throw new ApiError(error.data.error.message);
     throw new Error(`Recommend failed with status ${response.status}`);
   }
 

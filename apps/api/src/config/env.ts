@@ -149,6 +149,33 @@ const envSchema = z.object({
   // given model, so this only bounds memory. Default: 7 days.
   QUERY_EMBEDDING_TTL_SECONDS: wholeNumber(1, 31_536_000).default(604_800),
 
+  // Production concerns (Phase 8, docs/ARCHITECTURE.md).
+  // How many proxies sit in front of the API. The client's IP for rate limits
+  // is read from X-Forwarded-For only when this is above 0.
+  TRUST_PROXY_HOPS: wholeNumber(0, 10).default(0),
+  // The largest request body the API reads.
+  BODY_LIMIT_BYTES: wholeNumber(100, 1_000_000).default(10_000),
+  // Requests per client IP in a sliding window. Recommend requests can cost
+  // tokens, so they have their own, lower limit.
+  RATE_LIMIT_WINDOW_SECONDS: wholeNumber(1, 3600).default(60),
+  RATE_LIMIT_RECOMMEND_MAX: wholeNumber(1, 100_000).default(20),
+  RATE_LIMIT_API_MAX: wholeNumber(1, 100_000).default(120),
+  // Tokens (input plus output) the API may use per UTC day (D-049). From the
+  // soft limit on, the pick step is skipped; from the hard limit on, no LLM
+  // call is made at all.
+  TOKEN_BUDGET_SOFT: wholeNumber(0, 1_000_000_000).default(800_000),
+  TOKEN_BUDGET_HARD: wholeNumber(0, 1_000_000_000).default(1_000_000),
+  // How many LLM calls may be running at the same time.
+  LLM_MAX_CONCURRENT: wholeNumber(1, 1000).default(4),
+  // On SIGTERM, how long requests in flight get to finish before they are cut off.
+  SHUTDOWN_TIMEOUT_MS: wholeNumber(0, 600_000).default(10_000),
+  // GET /api/stats needs this token. Without it the route does not exist.
+  ADMIN_TOKEN: z.string().min(16, { error: message("at least 16 characters") }).optional(),
+  // Rows of llm_calls and request_log older than this are deleted (D-024).
+  LOG_RETENTION_DAYS: wholeNumber(1, 3650).default(30),
+  // When the retention job runs (cron syntax, UTC). Default: 03:15 every day.
+  RETENTION_CRON: z.string().min(9).default("15 3 * * *"),
+
   // The embeddings job (`pnpm embed`).
   EMBED_BATCH_SIZE: wholeNumber(1, 100).default(20),
   EMBED_REQUESTS_PER_MINUTE: wholeNumber(1, 6000).default(7),
@@ -184,6 +211,7 @@ export type Config = {
     retry: { maxRetries: number; baseDelayMs: number; maxDelayMs: number };
     /** Retries for calls made while a user waits. */
     onlineRetry: { maxRetries: number; baseDelayMs: number; maxDelayMs: number };
+    maxConcurrent: number;
   };
   recommend: {
     candidates: number;
@@ -216,6 +244,11 @@ export type Config = {
     jobAttempts: number;
     exportDir: string;
   };
+  http: { trustProxyHops: number; bodyLimitBytes: number; shutdownTimeoutMs: number };
+  rateLimit: { windowSeconds: number; recommendMax: number; apiMax: number };
+  budget: { softTokens: number; hardTokens: number };
+  adminToken: string | undefined;
+  retention: { days: number; cron: string };
 };
 
 /** Thrown when the environment is missing or has invalid variables. Never contains values. */
@@ -245,6 +278,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
   const parsed = result.data;
+  if (parsed.TOKEN_BUDGET_SOFT > parsed.TOKEN_BUDGET_HARD) {
+    throw new ConfigError(["TOKEN_BUDGET_SOFT must not be above TOKEN_BUDGET_HARD"]);
+  }
   return {
     nodeEnv: parsed.NODE_ENV,
     port: parsed.PORT,
@@ -281,6 +317,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         baseDelayMs: parsed.LLM_ONLINE_RETRY_BASE_MS,
         maxDelayMs: parsed.LLM_ONLINE_RETRY_MAX_MS,
       },
+      maxConcurrent: parsed.LLM_MAX_CONCURRENT,
     },
     recommend: {
       candidates: parsed.RECOMMEND_CANDIDATES,
@@ -320,6 +357,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       jobAttempts: parsed.EMBED_JOB_ATTEMPTS,
       exportDir: parsed.EXPORT_DIR,
     },
+    http: {
+      trustProxyHops: parsed.TRUST_PROXY_HOPS,
+      bodyLimitBytes: parsed.BODY_LIMIT_BYTES,
+      shutdownTimeoutMs: parsed.SHUTDOWN_TIMEOUT_MS,
+    },
+    rateLimit: {
+      windowSeconds: parsed.RATE_LIMIT_WINDOW_SECONDS,
+      recommendMax: parsed.RATE_LIMIT_RECOMMEND_MAX,
+      apiMax: parsed.RATE_LIMIT_API_MAX,
+    },
+    budget: { softTokens: parsed.TOKEN_BUDGET_SOFT, hardTokens: parsed.TOKEN_BUDGET_HARD },
+    adminToken: parsed.ADMIN_TOKEN,
+    retention: { days: parsed.LOG_RETENTION_DAYS, cron: parsed.RETENTION_CRON },
   };
 }
 

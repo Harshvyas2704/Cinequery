@@ -46,7 +46,13 @@ export function fakeEmbedding(text: string, dimensions: number): number[] {
 }
 
 /** Stands in for Gemini in tests: no network, scripted replies and failures. */
-export function createFakeBackend(options: { embeddingDimensions: number }): FakeBackend {
+export function createFakeBackend(options: {
+  embeddingDimensions: number;
+  /** Answers generateJson when no reply is scripted, for a load test. */
+  respond?: (input: GenerateJsonInput) => unknown;
+  /** How long every call takes, to stand in for a real provider's latency. */
+  latencyMs?: number;
+}): FakeBackend {
   const replies: ({ data: unknown } | { failure: FakeFailure })[] = [];
   let inFlight = 0;
   const failures: FakeFailure[] = [];
@@ -55,6 +61,7 @@ export function createFakeBackend(options: { embeddingDimensions: number }): Fak
 
   // Applies the next queued failure, if any.
   async function maybeFail(signal: AbortSignal, own: FakeFailure[] = []): Promise<void> {
+    if (options.latencyMs) await new Promise((resolve) => setTimeout(resolve, options.latencyMs));
     const failure = own.shift() ?? failures.shift();
     if (!failure) return;
     if (failure.type === "timeout") {
@@ -89,7 +96,8 @@ export function createFakeBackend(options: { embeddingDimensions: number }): Fak
       inFlight++;
       try {
         await maybeFail(signal);
-        const reply = replies.shift();
+        const reply =
+          replies.shift() ?? (options.respond ? { data: options.respond(input) } : undefined);
         if (!reply) {
           throw new LlmError("error", "The fake provider has no scripted reply for generateJson");
         }
@@ -105,13 +113,18 @@ export function createFakeBackend(options: { embeddingDimensions: number }): Fak
 
     async embed(input, signal) {
       calls.push({ method: "embed", input });
-      await maybeFail(signal, embedFailures);
-      return {
-        // Documents and queries with the same text get the same vector, so a
-        // test can search for a movie by its own text.
-        vectors: input.texts.map((text) => fakeEmbedding(text, options.embeddingDimensions)),
-        usage: { inputTokens: input.texts.join(" ").split(/\s+/).length, outputTokens: 0 },
-      };
+      inFlight++;
+      try {
+        await maybeFail(signal, embedFailures);
+        return {
+          // Documents and queries with the same text get the same vector, so a
+          // test can search for a movie by its own text.
+          vectors: input.texts.map((text) => fakeEmbedding(text, options.embeddingDimensions)),
+          usage: { inputTokens: input.texts.join(" ").split(/\s+/).length, outputTokens: 0 },
+        };
+      } finally {
+        inFlight--;
+      }
     },
   };
 }

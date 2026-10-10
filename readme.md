@@ -33,3 +33,42 @@ maxmemory-policy volatile-lru
   requests.
 - If the cache is full or Redis is down, search still works: the request is
   simply embedded again.
+
+## Processes and operations
+
+| Command         | What it is                                                              |
+| --------------- | ----------------------------------------------------------------------- |
+| `pnpm dev`      | The API and the web app, for development                                |
+| `pnpm worker`   | The background worker: deletes log rows older than 30 days, once a day  |
+| `pnpm loadtest` | A load test of the API against a fake LLM; no request reaches Gemini    |
+
+Both processes stop cleanly on `SIGTERM` or Ctrl-C: they finish what is in
+flight, then close the database and Redis.
+
+To see today's usage, set `ADMIN_TOKEN` in `.env` (at least 16 characters) and
+ask for the stats:
+
+```bash
+curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:3000/api/stats
+```
+
+The limits (requests per minute, tokens per day, concurrent LLM calls) are
+listed in `.env.example` and explained in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Evaluation
+
+`pnpm eval` runs the 26 requests of `eval/queries.json` through the pipeline in
+four modes and checks every answer by program. How it works and the results
+are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#evaluation-phase-9).
+
+```bash
+pnpm eval --check          # validate the queries against the catalog; no API calls
+pnpm eval --mode fulltext  # the baseline without AI; no API calls
+pnpm eval --mode all       # all four modes; about 156 real Gemini calls
+pnpm eval --report         # the comparison table from the saved runs
+```
+
+So far only the baseline is measured (constraints 46%, hit rate 30%); the
+other modes are waiting for the free tier's daily embedding quota.
+

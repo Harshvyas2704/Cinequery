@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  type BudgetLevel,
   type ParsedRequest,
   type Recommendation,
   type RecommendRequest,
@@ -63,13 +64,25 @@ export type RecommendDeps = {
     /** How close a typed title must be to a real one, 0 to 1. */
     minTitleSimilarity: number;
   };
+  /** The day's token budget. At "soft" the pick is skipped, at "hard" every LLM call. */
+  budget: { level(): Promise<BudgetLevel> };
   /** The clock, so tests can fix the year. */
   now?: () => Date;
   logger: Logger;
 };
 
 /** What a caller that streams the answer is told along the way. */
+/** The steps that call the LLM. */
+export type LlmStep = "parse" | "embed" | "pick";
+
 export type RecommendOptions = {
+  /**
+   * Steps to leave out, as if no LLM were configured for them. Used by the
+   * evaluation to measure what each step adds; not reachable over HTTP.
+   */
+  skip?: readonly LlmStep[];
+  /** The id of the HTTP request, so logs, llm_calls and the response agree. */
+  requestId?: string;
   /** Aborted when the client has gone; the work then stops with an error. */
   signal?: AbortSignal;
   /** Called once, as soon as the search is done. */
@@ -169,8 +182,12 @@ export async function recommend(
     if (signal?.aborted) throw error;
     deps.logger.warn({ requestId, err: (error as Error).message }, what);
   };
-  const requestId = randomUUID();
+  const requestId = options.requestId ?? randomUUID();
   const stages: Stage[] = [];
+  // Over budget, stored results are still used; only new LLM calls stop.
+  const budget = deps.llm ? await deps.budget.level() : "ok";
+  const mayCall = budget !== "hard";
+  const skipped = (step: LlmStep) => options.skip?.includes(step) ?? false;
   const normalized = normalizeQuery(request.query);
   const currentYear = (deps.now?.() ?? new Date()).getFullYear();
   // "cached" means this request made no LLM call because stored results were used.
@@ -179,7 +196,7 @@ export async function recommend(
 
   // 1. Parse.
   const understood = await stage<ParsedRequest | null>(stages, "parse", async () => {
-    if (!deps.llm) return { value: null, status: "skipped" };
+    if (!deps.llm || skipped("parse")) return { value: null, status: "skipped" };
 
     // The year is part of the key because "recent" depends on it; the model,
     // because another model may understand the request differently.
@@ -189,6 +206,7 @@ export async function recommend(
       cacheHits++;
       return { value: stored, status: "ok" };
     }
+    if (!mayCall) return { value: null, status: "skipped" };
     llmCalls++;
     try {
       const { data } = await deps.llm.generateJson({
@@ -222,7 +240,7 @@ export async function recommend(
   // 2. Embed the search text, and look up any films the request names.
   const [embedded, references] = await Promise.all([
     stage<number[] | null>(stages, "embed", async () => {
-      if (!deps.llm) return { value: null, status: "skipped" };
+      if (!deps.llm || skipped("embed")) return { value: null, status: "skipped" };
 
       const text = normalizeQuery(parsed.searchText);
       const stored = await deps.embeddingCache.get(text);
@@ -230,6 +248,7 @@ export async function recommend(
         cacheHits++;
         return { value: stored, status: "ok" };
       }
+      if (!mayCall) return { value: null, status: "skipped" };
       llmCalls++;
       try {
         const { vectors } = await deps.llm.embed({
@@ -295,7 +314,7 @@ export async function recommend(
   // them and adds reasons, and it is the slowest step.
   const candidates = found.slice(0, deps.pick.candidates);
   const inSearchOrder = found.slice(0, request.limit);
-  const llm = candidates.length > 0 ? deps.llm : null;
+  const llm = candidates.length > 0 && !skipped("pick") ? deps.llm : null;
   options.onResults?.({ requestId, results: inSearchOrder, picking: llm !== null });
 
   // 4. Pick.
@@ -311,6 +330,8 @@ export async function recommend(
       cacheHits++;
       return { value: applyPicks(candidates, stored, request.limit), status: "ok" };
     }
+    // The pick is most of a request's cost, so it is the first thing to go.
+    if (budget !== "ok") return { value: null, status: "skipped" };
     llmCalls++;
     try {
       const lines = await candidateLines(deps.pool, candidates, deps.pick);
@@ -355,6 +376,7 @@ export async function recommend(
       cached: llmCalls === 0 && cacheHits > 0,
       ...(relaxed.length > 0 ? { relaxed } : {}),
       ...(understood ? { parsed: understood } : {}),
+      ...(budget !== "ok" ? { budget } : {}),
     },
   };
 }

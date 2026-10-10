@@ -8,8 +8,8 @@ export const RECOMMEND_LIMIT_DEFAULT = 8;
 /** A reason is one sentence of at most 25 words; anything longer is cut. */
 export const RECOMMEND_WHY_MAX_LENGTH = 240;
 
-/** Body of POST /api/recommend. */
-export const recommendRequestSchema = z.object({
+/** Body of POST /api/recommend. A field that is not listed here is refused. */
+export const recommendRequestSchema = z.strictObject({
   query: z
     .string({ error: "query must be text" })
     .trim()
@@ -80,6 +80,15 @@ export const RELAXABLE_FILTERS = [
   "genres",
 ] as const;
 
+/**
+ * How much of the day's token budget is used:
+ *   ok    everything runs
+ *   soft  reasons are paused (the pick step is skipped)
+ *   hard  all AI steps are paused; search works from keywords and stored results
+ */
+export const budgetLevelSchema = z.enum(["ok", "soft", "hard"]);
+export type BudgetLevel = z.infer<typeof budgetLevelSchema>;
+
 export const recommendResponseSchema = z.object({
   requestId: z.string(),
   results: z.array(recommendationSchema),
@@ -91,8 +100,59 @@ export const recommendResponseSchema = z.object({
     relaxed: z.array(z.enum(RELAXABLE_FILTERS)).optional(),
     /** What the request was understood to mean. Absent when the parse step did not run or failed. */
     parsed: parsedRequestSchema.optional(),
+    /** Present when the day's token budget made the request skip AI steps. */
+    budget: z.enum(["soft", "hard"]).optional(),
   }),
 });
+
+const latencySchema = z.object({ p50: z.number().nullable(), p95: z.number().nullable() });
+
+/** GET /api/stats: today's numbers (since midnight UTC). */
+export const statsResponseSchema = z.object({
+  since: z.string(),
+  requests: z.object({
+    total: z.number().int(),
+    /** Requests answered without any LLM call. */
+    cached: z.number().int(),
+    cacheHitRate: z.number().nullable(),
+    errors: z.number().int(),
+    cancelled: z.number().int(),
+    latencyMs: latencySchema,
+  }),
+  stages: z.array(
+    z.object({
+      name: z.string(),
+      runs: z.number().int(),
+      fallbacks: z.number().int(),
+      skipped: z.number().int(),
+      latencyMs: latencySchema,
+    }),
+  ),
+  llm: z.object({
+    calls: z.number().int(),
+    failedCalls: z.number().int(),
+    inputTokens: z.number().int(),
+    outputTokens: z.number().int(),
+    /** Tokens of the parse, embedding and pick calls, per recommend request. */
+    averageTokensPerRequest: z.number().nullable(),
+    byStage: z.array(
+      z.object({
+        stage: z.string(),
+        calls: z.number().int(),
+        failedCalls: z.number().int(),
+        inputTokens: z.number().int(),
+        outputTokens: z.number().int(),
+      }),
+    ),
+  }),
+  budget: z.object({
+    usedTokens: z.number().int(),
+    softTokens: z.number().int(),
+    hardTokens: z.number().int(),
+    level: budgetLevelSchema,
+  }),
+});
+export type StatsResponse = z.infer<typeof statsResponseSchema>;
 
 // POST /api/recommend/stream answers with Server-Sent Events, in this order:
 //   results  the movies in search order, as soon as the search is done

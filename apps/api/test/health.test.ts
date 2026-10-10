@@ -80,7 +80,11 @@ describe("unknown routes", () => {
     const response = await fetch(`${app.url}/api/nope`);
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({
-      error: { code: "not_found", message: "No route for GET /api/nope" },
+      error: {
+        code: "not_found",
+        message: "No route for GET /api/nope",
+        requestId: response.headers.get("x-request-id"),
+      },
     });
   });
 });

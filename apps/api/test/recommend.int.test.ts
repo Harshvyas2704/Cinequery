@@ -4,6 +4,7 @@ import {
   errorResponseSchema,
   parsedRequestSchema,
   pickedEventSchema,
+  type RecommendResponse,
   recommendResponseSchema,
   resultsEventSchema,
 } from "@cinequery/shared";
@@ -18,11 +19,14 @@ import { createPool } from "../src/db/pool.js";
 import { saveEmbeddings } from "../src/embeddings/store.js";
 import { ingest } from "../src/ingest/load.js";
 import type { Movie, MovieTag } from "../src/ingest/transform.js";
+import { type TokenBudget, unlimitedBudget } from "../src/limits/budget.js";
 import { llmCallRecorder } from "../src/llm/calls.js";
 import { createFakeBackend, type FakeBackend, fakeEmbedding } from "../src/llm/fake.js";
 import { createLlmProvider } from "../src/llm/provider.js";
 import type { GenerateJsonInput, LlmProvider } from "../src/llm/types.js";
+import { loadFacts, loadTokens } from "../src/eval/facts.js";
 import { normalizeQuery } from "../src/recommend/normalize.js";
+import { recommend as runPipeline, type RecommendDeps } from "../src/recommend/pipeline.js";
 import { picksSchema } from "../src/recommend/pick.js";
 import { loadTestConfig, silentLogger, startApp, testAppConfig, waitForRedis } from "./helpers.js";
 
@@ -164,12 +168,18 @@ async function seed(options: { embeddings: boolean } = { embeddings: true }) {
 }
 
 async function start(
-  options: { llm?: LlmProvider | null; pickTimeoutMs?: number; pool?: pg.Pool } = {},
+  options: {
+    llm?: LlmProvider | null;
+    pickTimeoutMs?: number;
+    pool?: pg.Pool;
+    budget?: TokenBudget;
+  } = {},
 ) {
   const prefix = `test-${randomUUID()}`; // clean caches for every test
   app = await startApp({
     pool: options.pool ?? pool,
     redis,
+    budget: options.budget ?? unlimitedBudget,
     config: {
       ...testAppConfig,
       recommend: {
@@ -991,5 +1001,147 @@ describe("POST /api/recommend/stream", () => {
     controller.abort();
     await pending;
     await expect.poll(() => backend.inFlight, { timeout: 2000 }).toBe(0);
+  });
+});
+
+describe("POST /api/recommend: token budget", () => {
+  // A budget whose level the test sets directly.
+  let level: "ok" | "soft" | "hard";
+  const budget: TokenBudget = { ...unlimitedBudget, level: async () => level };
+
+  beforeEach(() => {
+    level = "ok";
+  });
+
+  it("skips the pick at the soft limit, but still understands the request", async () => {
+    level = "soft";
+    await start({ budget });
+    modelSays({ genres: ["Action"], searchText: "fast action movie" });
+    const body = await recommend("something fast", 3);
+
+    expect(body.stages).toEqual({ parse: "ok", embed: "ok", search: "ok" });
+    expect(body.pick).toBe("skipped");
+    expect(body.meta.budget).toBe("soft");
+    expect(body.titles).toEqual(["Last Stand", "Speed Chase", "Dilli Express"]);
+    expect(callsOf("pick")).toHaveLength(0);
+  });
+
+  it("makes no LLM call at the hard limit, and searches by keywords", async () => {
+    level = "hard";
+    await start({ budget });
+    const body = await recommend("heist");
+
+    expect(body.stages).toEqual({ parse: "skipped", embed: "skipped", search: "ok" });
+    expect(body.pick).toBe("skipped");
+    expect(body.meta.budget).toBe("hard");
+    expect(body.titles.sort()).toEqual(["Heist Night", "Unseen Job"]);
+    expect(backend.calls).toHaveLength(0);
+  });
+
+  it("still uses what is cached when over budget", async () => {
+    await start({ budget });
+    modelSays({ searchText: "fast action movie" });
+    await modelPicks(["Dilli Express", "Fast."]);
+    const first = await recommend("something fast", 2);
+    expect(first.meta.budget).toBeUndefined();
+
+    level = "hard";
+    const second = await recommend("something fast", 2);
+    expect(second.stages).toEqual({ parse: "ok", embed: "ok", search: "ok" });
+    expect(second.pick).toBe("ok");
+    expect(second.results).toEqual(first.results);
+    expect(second.meta).toMatchObject({ cached: true, budget: "hard" });
+    expect(backend.calls).toHaveLength(3); // all from the first request
+  });
+
+  it("tells a streaming client about the budget in the last event", async () => {
+    level = "soft";
+    await start({ budget });
+    modelSays({ searchText: "fast action movie" });
+    const response = await fetch(`${app!.url}/api/recommend/stream`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "something fast" }),
+    });
+    const text = await response.text();
+    expect(text).not.toContain("event: picked");
+    const done = JSON.parse(/event: done\ndata: (.*)/.exec(text)![1]!) as unknown;
+    expect(doneEventSchema.parse(done).meta.budget).toBe("soft");
+  });
+});
+
+describe("recommend with steps left out (the evaluation's modes)", () => {
+  const deps = (): RecommendDeps => ({
+    pool,
+    llm,
+    embeddingCache: noCache,
+    parseCache: noCache,
+    pickCache: noCache,
+    budget: unlimitedBudget,
+    vector: {
+      model: MODEL,
+      candidates: 30,
+      weights: testAppConfig.recommend.weights,
+      posterBaseUrl: testAppConfig.search.posterBaseUrl,
+    },
+    search: testAppConfig.search,
+    parse: testAppConfig.recommend.parse,
+    pick: testAppConfig.recommend.pick,
+    embedTimeoutMs: 500,
+    reference: testAppConfig.recommend.reference,
+    logger: silentLogger,
+  });
+  const noCache = { get: async () => null, set: async () => {} };
+  const statuses = (response: RecommendResponse) =>
+    Object.fromEntries(response.meta.stages.map((stage) => [stage.name, stage.status]));
+
+  it("fulltext: no LLM call at all, keyword search on the words as typed", async () => {
+    const response = await runPipeline(deps(), { query: "heist", limit: 8 }, { skip: ["parse", "embed", "pick"] });
+    expect(statuses(response)).toEqual({ parse: "skipped", embed: "skipped", search: "ok", pick: "skipped" });
+    expect(response.results.map((result) => result.movie.title).sort()).toEqual(["Heist Night", "Unseen Job"]);
+    expect(backend.calls).toHaveLength(0);
+  });
+
+  it("semantic: embeds the words as typed, without parse or pick", async () => {
+    const response = await runPipeline(
+      deps(),
+      { query: "a prison escape", limit: 3 },
+      { skip: ["parse", "pick"], requestId: "eval-semantic-1" },
+    );
+    expect(statuses(response)).toEqual({ parse: "skipped", embed: "ok", search: "ok", pick: "skipped" });
+    expect(response.results[0]!.movie.title).toBe("Cool Hand Luke");
+    expect(response.requestId).toBe("eval-semantic-1");
+    expect(backend.calls.map((call) => call.method)).toEqual(["embed"]);
+  });
+
+  it("parsed: parse and embed, but no pick", async () => {
+    modelSays({ genres: ["Action"], searchText: "fast action movie" });
+    const response = await runPipeline(deps(), { query: "something fast", limit: 3 }, { skip: ["pick"] });
+    expect(statuses(response)).toEqual({ parse: "ok", embed: "ok", search: "ok", pick: "skipped" });
+    expect(callsOf("pick")).toHaveLength(0);
+  });
+
+  it("looks up the facts the checks need, with curated tag names", async () => {
+    const ids = await Promise.all([idOf("Twisty Thriller"), idOf("Dilli Express")]);
+    const found = await loadFacts(pool, ids);
+    expect(found.get(ids[0]!)).toMatchObject({
+      tmdbId: 12,
+      title: "Twisty Thriller",
+      year: 2000,
+      genres: ["Thriller"],
+      rating: 7,
+      // The stored genome tag is "plot twist"; the curated tag is "twist ending".
+      tags: ["twist ending"],
+    });
+    expect(found.get(ids[1]!)).toMatchObject({ tmdbId: 15, language: "hi", tags: [] });
+    expect(await loadFacts(pool, [])).toEqual(new Map());
+  });
+
+  it("adds up the tokens of a request's LLM calls", async () => {
+    modelSays({ searchText: "fast action movie" });
+    await runPipeline(deps(), { query: "something fast", limit: 3 }, { skip: ["pick"], requestId: "eval-tokens-1" });
+    // The fake reports 100 in and 20 out for the parse, and one token per embedded word.
+    expect(await loadTokens(pool, "eval-tokens-1")).toEqual({ calls: 2, input: 103, output: 20 });
+    expect(await loadTokens(pool, "no-such-request")).toEqual({ calls: 0, input: 0, output: 0 });
   });
 });

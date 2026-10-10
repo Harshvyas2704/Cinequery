@@ -328,6 +328,7 @@ describe("GET /api/movies/:id", () => {
     expect(errorResponseSchema.parse(await response.json()).error).toEqual({
       code: "not_found",
       message: "No movie with id 999999",
+      requestId: response.headers.get("x-request-id"),
     });
   });
 

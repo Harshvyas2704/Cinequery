@@ -445,3 +445,261 @@ surprise lies, for example "a completely unexpected mastermind" or "a major
 late-game betrayal". This is a small sample, not a guarantee; Phase 9 should
 count spoilers on the evaluation set.
 
+## Production concerns (Phase 8)
+
+What a request passes on its way in, in order:
+
+```
+request
+  1. request id      kept from x-request-id if safe, otherwise a new UUID
+  2. security        helmet headers; CORS for WEB_ORIGIN only
+  3. body            JSON up to 10 KB (413 above)
+  4. rate limit      per client IP, sliding window in Redis (429 above)
+  5. validation      unknown fields refused (400)
+  6. token budget    decides which AI steps may run
+  7. the pipeline    each LLM call waits for one of 4 slots
+  8. request log     one row in request_log, whatever the outcome
+```
+
+The code is in `apps/api/src/app.ts`, `limits/`, `stats/` and `shutdown.ts`.
+All numbers below are defaults from config (`.env.example`).
+
+### Request id
+
+Every response carries `x-request-id`. The same id is in every log line of the
+request, in its `llm_calls` rows, in its `request_log` row, in the `requestId`
+of a recommend response and in the body of an error. An id sent by the caller
+is kept only if it is 8 to 64 characters of letters, digits, `.`, `_` and `-`;
+anything else is replaced, because the id is written to logs and the database.
+
+### Rate limit
+
+| Routes                              | Limit per client IP |
+| ----------------------------------- | ------------------- |
+| `/api/recommend`, `/api/recommend/stream` | 20 per 60 seconds |
+| Every other `/api` route            | 120 per 60 seconds  |
+| `/api/health`                       | none                |
+
+The window slides: Redis keeps the time of each of a client's requests in a
+sorted set, and one Lua script drops the old ones, counts the rest and adds
+the new one in a single step. A refused request is not counted. The answer
+over the limit is 429 with `Retry-After` (seconds until the oldest request
+leaves the window) and the usual error body with code `rate_limited`.
+
+The client's IP is the connection's address. Behind a proxy that is the
+proxy, so set `TRUST_PROXY_HOPS` to the number of proxies; the IP is then read
+from `X-Forwarded-For`. It is 0 by default because a client can write anything
+into that header.
+
+### Token budget
+
+Tokens (input plus output) of every LLM call the API makes are added to a
+counter in Redis that is named after the UTC day, so it starts again at
+midnight UTC.
+
+| Tokens used today     | Level  | What a request does                                       |
+| --------------------- | ------ | --------------------------------------------------------- |
+| Below 800,000         | `ok`   | Everything                                                |
+| 800,000 to 999,999    | `soft` | Parse and embed as usual; the pick step is `skipped`      |
+| 1,000,000 or more     | `hard` | No LLM call; parse, embed and pick are `skipped`          |
+
+At any level, stored parse results, embeddings and picks are still used, so a
+request that was asked before is answered in full. The response carries
+`meta.budget` (`soft` or `hard`) and the web page says "Paused: today's AI
+budget is used up" for the skipped steps.
+
+The level is read once at the start of a request, so the budget can be passed
+by the cost of the requests then in flight (about 3,600 tokens each).
+
+### Concurrency limit
+
+At most 4 LLM calls run at the same time in one API process
+(`LLM_MAX_CONCURRENT`). Further calls wait in order of arrival. Waiting counts
+toward the call's timeout: a parse call that has not got a slot within 4
+seconds times out, and the request falls back.
+
+### When Redis is down
+
+| Part            | What happens                                              |
+| --------------- | --------------------------------------------------------- |
+| Caches          | Every read is a miss, every write is skipped (D-044)      |
+| Rate limit      | Requests are let through                                  |
+| Token budget    | Counted in the process's memory until Redis is back       |
+| Health check    | Reports Redis as down                                     |
+
+Rate-limit and budget keys have an expiry, so under memory pressure Redis may
+evict them like cache entries (`volatile-lru`); the count then starts again.
+
+### Shutdown
+
+On `SIGTERM` or `SIGINT`:
+
+1. The API stops accepting connections and closes idle ones.
+2. Open requests, including streams, get up to 10 seconds to finish
+   (`SHUTDOWN_TIMEOUT_MS`). What is still open then is cut off.
+3. Postgres and Redis are closed. The process exits 0, or 1 if step 2 had to
+   cut something off.
+
+The worker does the same, with "the job in progress" in place of "open
+requests". A second signal does not start a second shutdown.
+
+### The request log and `GET /api/stats`
+
+Each recommend request writes one row to `request_log`: its id, route,
+outcome (`ok`, `error`, `cancelled`), whether it was answered from caches,
+how many movies it returned, the total time, and the status and time of each
+step. **The request text is not stored.**
+
+`GET /api/stats` needs `Authorization: Bearer <ADMIN_TOKEN>`. Without a
+configured token the route answers 404; with a wrong one, 401. It reports,
+since midnight UTC:
+
+| Field                          | From          | Meaning                                         |
+| ------------------------------ | ------------- | ----------------------------------------------- |
+| `requests.total`, `cached`, `cacheHitRate` | `request_log` | Requests, and the share answered without an LLM call |
+| `requests.errors`, `cancelled` | `request_log` | Failed requests, and ones the client abandoned  |
+| `requests.latencyMs`           | `request_log` | p50 and p95 of the total time                   |
+| `stages[]`                     | `request_log` | Per step: runs, fallbacks, skipped, p50 and p95 |
+| `llm.byStage[]`, totals        | `llm_calls`   | Calls, failed calls and tokens, also of batch jobs |
+| `llm.averageTokensPerRequest`  | both          | Parse, embedding and pick tokens per request    |
+| `budget`                       | Redis         | Tokens used, both limits, the level             |
+
+The admin token never reaches the log: the `Authorization`, `Cookie` and
+`x-goog-api-key` headers are blanked in request logs
+(`apps/api/src/logger.ts`).
+
+### Retention
+
+`pnpm worker` starts a process that runs one scheduled BullMQ job: every day
+at 03:15 UTC it deletes rows of `llm_calls` and `request_log` older than 30
+days. The schedule is stored in Redis under a fixed id, so starting the worker
+again, or twice, does not schedule the job twice.
+
+### Load test
+
+`pnpm loadtest` starts the real app in one process with the real database and
+Redis and a fake LLM that answers every call after 50 ms, then sends requests
+over HTTP. Measured on the development laptop, with 28,725 movies and 980
+embeddings:
+
+**20 clients for 20 seconds, 30% of requests never asked before**
+
+| Measure            | Value                                   |
+| ------------------ | --------------------------------------- |
+| Requests           | 1,603 (78 a second), 496 of them new    |
+| Errors             | 0                                       |
+| Latency, all       | p50 14 ms, p95 767 ms, p99 773 ms       |
+| First 5 seconds    | p50 15 ms, p95 770 ms                   |
+| Last 5 seconds     | p50 14 ms, p95 761 ms                   |
+
+| Step   | New request, p50 | Repeated request, p50 |
+| ------ | ---------------- | --------------------- |
+| parse  | 236 ms           | 0 ms                  |
+| embed  | 255 ms           | 0 ms                  |
+| search | 9 ms             | 7 ms                  |
+| pick   | 245 ms           | 0 ms                  |
+
+A repeated request takes about 14 ms. A new one takes about 770 ms although
+its three LLM calls take 50 ms each: with 20 clients and 4 slots, each call
+waits about 200 ms for its turn. That is the concurrency limit working, and it
+means latency under load is set by `LLM_MAX_CONCURRENT` and the provider's
+speed, not by Postgres. Latency did not grow over the run.
+
+**One client sends 100 requests at once, limit 20**
+
+20 were answered with 200 and 80 with 429, none with anything else; p95 53 ms.
+
+The load generator runs in the same process as the server, so the numbers
+include its own work. They show stability, not the capacity of a deployment.
+
+## Evaluation (Phase 9)
+
+`pnpm eval` runs a fixed set of requests through the pipeline and checks every
+answer by program, so that a change can be judged by numbers.
+
+```
+eval/queries.json     26 requests, each with checks
+        │
+        ▼
+pnpm eval --mode <mode>      apps/api/src/eval
+        │   for each request: run the pipeline with the mode's steps,
+        │   look up the returned movies in Postgres, apply the checks
+        ▼
+eval/results/<date>-<mode>.json     the run: config, prompt versions,
+                                    every answer, and the summary
+```
+
+### The four modes
+
+Each mode adds one step to the one before, so the difference between two
+columns of the table is what that step adds.
+
+| Mode       | Parse | Embed | Pick | What it is                                     |
+| ---------- | ----- | ----- | ---- | ---------------------------------------------- |
+| `fulltext` | no    | no    | no   | Keyword search on the words as typed (Phase 3) |
+| `semantic` | no    | yes   | no   | Plus search by meaning (Phase 5)               |
+| `parsed`   | yes   | yes   | no   | Plus filters, tags and an English search text (Phase 6) |
+| `full`     | yes   | yes   | yes  | Plus the model's choice and reasons (Phase 7)  |
+
+Nothing is cached during a run, and the pipeline is called directly, not over
+HTTP.
+
+### The queries and their checks
+
+The 26 queries cover genres, decades, runtime, rating, language, moods, plot
+devices, "like <film>", exclusions, four Hindi or Hinglish requests, two vague
+ones and one prompt injection. A check is one of:
+
+| Check                                   | A returned movie passes if                        |
+| --------------------------------------- | ------------------------------------------------- |
+| `genresInclude`, `genresAny`, `genresExclude` | it has all, at least one, or none of the genres |
+| `minYear`, `maxYear`, `maxRuntime`, `minRating`, `language` | the database value is within the limit |
+| `noneOfMovies`                          | it is not one of the listed movies                |
+| `tagsAny`                               | it has at least one of the curated tags           |
+| `anyOfMovies`                           | (per query) at least one listed movie was returned |
+| `noSpoilerWords`                        | (per reason) none of the phrases occurs in it     |
+
+### The measures
+
+| Measure                | Meaning                                                              |
+| ---------------------- | -------------------------------------------------------------------- |
+| Constraint pass rate   | Share of the returned movies that meet every constraint, averaged over the queries that have any |
+| Hit rate               | Share of the queries with expected movies that returned at least one |
+| Tag match rate         | Share of the returned movies with one of the wanted tags             |
+| Spoiler check failures | Reasons that contain a listed phrase                                 |
+| Fallbacks              | LLM steps that failed and were replaced                              |
+| Latency p50, p95       | Time for the whole request, nothing cached                           |
+| Tokens per query       | Input plus output tokens of the request's LLM calls                  |
+
+### Results
+
+**Only the baseline has been measured so far.** The other three modes need
+embeddings of the requests, and the free tier's 1,000 embeddings for the day
+were used up (980 movies and about 20 requests). Running them without
+embeddings would only measure the keyword fallback, so those runs were stopped
+and not saved.
+
+| Measure                | fulltext | semantic | parsed | full |
+| ---------------------- | -------- | -------- | ------ | ---- |
+| Constraint pass rate   | 46%      | not run  | not run | not run |
+| Hit rate               | 30% (7 of 23) | not run | not run | not run |
+| Tag match rate         | 41%      | not run  | not run | not run |
+| Movies with a reason   | 0%       | not run  | not run | not run |
+| Spoiler check failures | 0        | not run  | not run | not run |
+| Fallbacks              | 0        | not run  | not run | not run |
+| Latency p50            | 19 ms    | not run  | not run | not run |
+| Latency p95            | 64 ms    | not run  | not run | not run |
+| Tokens per query       | 0        | not run  | not run | not run |
+
+What the baseline shows: keyword search cannot apply a constraint it is not
+told about. It scored 0% on constraints for "koi achhi suspense movie batao,
+90s ki", "a classic from the 1940s" and "a tense thriller, but no horror
+please", and returned nothing at all for the request in Hindi script.
+
+To fill in the table when the quota is back:
+
+```bash
+pnpm eval --mode all     # about 10 minutes, about 156 calls
+pnpm eval --report       # prints this table as Markdown from the saved runs
+```
+

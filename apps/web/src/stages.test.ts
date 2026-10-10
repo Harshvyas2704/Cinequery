@@ -50,6 +50,15 @@ describe("describeStages", () => {
     });
   });
 
+  it("says when a step was skipped because the budget is used up", () => {
+    const rows = describeStages({
+      cached: false,
+      budget: "soft",
+      stages: [{ name: "pick", ms: 0, status: "skipped" }],
+    });
+    expect(rows[0]).toMatchObject({ result: "Paused: today's AI budget is used up", problem: false });
+  });
+
   it("describes the parse step", () => {
     const parse = (status: string, cached = false) =>
       describeStages({ cached, stages: [{ name: "parse", ms: 900, status: status as "ok" }] })[0]!;
