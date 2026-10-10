@@ -204,6 +204,20 @@ flowchart TD
 - **Why:** One file that both SQL and TypeScript can read, so the tags kept in the data can never drift from the tags the parse prompt offers (D-012). The preparation script stops if the file names a tag the genome does not have.
 - **Consequences:** D-012 said about 40 tags; the list has 47. That adds roughly 20 tokens to the parse prompt.
 
+### D-035 Read Parquet in Node with hyparquet
+- **Status:** Accepted, 2026-10-10
+- **Decision:** `pnpm ingest` reads the clean Parquet files with `hyparquet`. The preparation script writes them with DuckDB's default compression (Snappy).
+- **Alternatives:** The DuckDB Node client; `parquetjs`; exporting CSV instead of Parquet.
+- **Why:** `hyparquet` is small, pure JavaScript and has no dependencies, so nothing native has to be built. It reads Snappy without an add-on; Zstandard would need a second package. The files are 9 MB and 1 MB, so compression ratio does not matter.
+- **Consequences:** The whole file is read into memory, which is fine at this size. Every row is checked with Zod before it is loaded.
+
+### D-036 Weighted rating: minimum votes is the median vote count
+- **Status:** Accepted, 2026-10-10
+- **Decision:** In the weighted rating, `m` is a percentile of `vote_count` across the catalog, set by `RATING_MIN_VOTES_PERCENTILE`. The default is 0.5 (the median), which is 146 votes for the current catalog. `C`, the mean rating, is 6.41.
+- **Alternatives:** A high percentile such as 0.9 (1,459 votes), as the IMDb-style formula is often used.
+- **Why:** The catalog already requires 50 votes. A high `m` pulls every film with fewer than a few thousand votes toward the mean, so only blockbusters rank well and "hidden gem" requests suffer. The median still stops a 9.0 from 60 votes beating an 8.4 from 20,000.
+- **Revisit:** In Phase 9, against the evaluation set.
+
 ---
 
 ## Infrastructure
@@ -274,6 +288,17 @@ flowchart TD
 - **Decision:** Pin TypeScript to the 6.0 line.
 - **Why:** `typescript-eslint` 8 supports TypeScript below 6.1 only, so linting would break on TypeScript 7.
 - **Revisit when:** `typescript-eslint` supports TypeScript 7.
+
+### D-037 Schema changes found while building ingestion
+- **Status:** Accepted, 2026-10-10
+- **Decision:** Three departures from the schema and steps first written in the plan:
+  1. `search_tsv` calls a small wrapper function, `text_array_to_string`, instead of `array_to_string`.
+  2. `rating_stats` has an `id boolean PRIMARY KEY DEFAULT true CHECK (id)` column.
+  3. Ingest brings a movie's genome tags in line with the file (delete what is gone, write what is new or changed) instead of deleting and inserting all of them.
+- **Why:**
+  1. Postgres marks `array_to_string` as stable, not immutable, and rejects it in a generated column. For `text[]` the result never changes, so the wrapper is declared immutable.
+  2. It makes a second row impossible and gives the upsert a key to conflict on.
+  3. Deleting and inserting 332,167 rows on every run would double the table with dead rows each time. With the comparison, a repeated run writes nothing at all. The result is the same as a replace. Tags with another `source` are left alone, ready for Phase 10.
 
 ---
 

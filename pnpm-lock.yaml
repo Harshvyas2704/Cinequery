@@ -199,6 +199,9 @@ importers:
       helmet:
         specifier: ^8.3.0
         version: 8.3.0
+      hyparquet:
+        specifier: ^1.31.3
+        version: 1.31.3
       ioredis:
         specifier: ^6.0.0
         version: 6.0.0
@@ -1201,6 +1204,9 @@ packages:
   http-errors@2.0.1:
     resolution: {integrity: sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ==}
     engines: {node: '>= 0.8'}
+
+  hyparquet@1.31.3:
+    resolution: {integrity: sha512-qThDJfCrTClFdaIQuQTtFOGp33bkbOyk+y1NrwcC8YZjvr5wxjNdKz7/PUF3xfNd7ZKLsYW+fY6N8dInjjMWJg==}
 
   iconv-lite@0.7.3:
     resolution: {integrity: sha512-IKXpvIzjnC9XTAUbVBcMfGS0EPaIXtW6v+zr+RRp+hqULEpo0owZax6wyRwPOJbWbzjYspQwusTsfVr0ifh4uQ==}
@@ -2741,6 +2747,8 @@ snapshots:
       setprototypeof: 1.2.0
       statuses: 2.0.2
       toidentifier: 1.0.1
+
+  hyparquet@1.31.3: {}
 
   iconv-lite@0.7.3:
     dependencies:

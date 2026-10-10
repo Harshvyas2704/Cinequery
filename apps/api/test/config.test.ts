@@ -30,6 +30,9 @@ describe("loadConfig", () => {
       redisUrl: valid.REDIS_URL,
       logLevel: "info",
       healthCheckTimeoutMs: 2000,
+      dataDir: expect.stringMatching(/data[/\\]clean$/),
+      ingestBatchSize: 500,
+      ratingMinVotesPercentile: 0.5,
     });
   });
 
@@ -73,6 +76,15 @@ describe("loadConfig", () => {
         "PORT must be a port number between 1 and 65535",
       ]);
     }
+  });
+
+  it("rejects ingest settings that are out of range", () => {
+    expect(problemsOf({ ...valid, INGEST_BATCH_SIZE: "0" })).toEqual([
+      "INGEST_BATCH_SIZE must be a whole number between 1 and 5000",
+    ]);
+    expect(problemsOf({ ...valid, RATING_MIN_VOTES_PERCENTILE: "50" })).toEqual([
+      "RATING_MIN_VOTES_PERCENTILE must be a number between 0 and 1",
+    ]);
   });
 
   it("reduces WEB_ORIGIN to an origin", () => {
