@@ -73,10 +73,12 @@ describe("loadConfig", () => {
       },
       embed: {
         batchSize: 20,
-        requestsPerMinute: 7,
+        requestsPerMinute: 4,
         timeoutMs: 60000,
         jobAttempts: 3,
         exportDir: expect.stringMatching(/exports$/),
+        dailyQuota: 1000,
+        quotaTimeZone: "America/Los_Angeles",
       },
       http: { trustProxyHops: 0, bodyLimitBytes: 10000, shutdownTimeoutMs: 10000 },
       rateLimit: { windowSeconds: 60, recommendMax: 20, apiMax: 120 },

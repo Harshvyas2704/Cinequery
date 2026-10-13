@@ -25,6 +25,8 @@ export type LlmCallRecord = {
   inputTokens: number | null;
   outputTokens: number | null;
   latencyMs: number;
+  /** For an embedding call: how many texts it embedded. The daily quota counts these. */
+  items: number | null;
   status: "ok" | "timeout" | "rate_limited" | "invalid_output" | "error" | "cancelled";
 };
 
@@ -113,7 +115,13 @@ export function createLlmProvider(backend: LlmBackend, options: ProviderOptions)
   }
 
   async function call<T extends { usage: Usage }>(
-    meta: { stage: string; model: string; promptVersion: string | null; requestId?: string },
+    meta: {
+      stage: string;
+      model: string;
+      promptVersion: string | null;
+      requestId?: string;
+      items?: number;
+    },
     timeoutMs: number,
     cancel: AbortSignal | undefined,
     run: (signal: AbortSignal) => Promise<T>,
@@ -131,6 +139,7 @@ export function createLlmProvider(backend: LlmBackend, options: ProviderOptions)
           inputTokens: usage?.inputTokens ?? null,
           outputTokens: usage?.outputTokens ?? null,
           latencyMs: Math.round(performance.now() - started),
+          items: meta.items ?? null,
           status,
         });
 
@@ -175,6 +184,7 @@ export function createLlmProvider(backend: LlmBackend, options: ProviderOptions)
           model: backend.embeddingModel,
           promptVersion: null,
           requestId: input.requestId,
+          items: input.texts.length,
         },
         input.timeoutMs,
         input.signal,

@@ -1,5 +1,8 @@
 // Entry point for the embedding commands:
 //   pnpm embed [--limit N]   embed movies that are missing or out of date
+//   pnpm embed --remaining [--reserve N]
+//                            embed as many as the provider's daily quota has
+//                            left, keeping N for search requests
 //   pnpm embed:status        queue, failed batches and coverage
 //   pnpm embed:export        write the embeddings to a file
 //   pnpm embed:import        load them from that file
@@ -18,6 +21,7 @@ import {
 } from "../jobs/embedQueue.js";
 import { createGeminiProvider } from "../llm/index.js";
 import { embedBatch } from "./batch.js";
+import { type Allowance, allowanceOf, lastQuotaReset, quotaUsage } from "./quota.js";
 import { assertDimensionsMatch, embeddingCoverage, loadMoviesToEmbed } from "./store.js";
 import { exportEmbeddings, exportFileName, importEmbeddings } from "./transfer.js";
 
@@ -32,7 +36,11 @@ const seconds = (since: number) => ((performance.now() - since) / 1000).toFixed(
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
-  options: { limit: { type: "string" } },
+  options: {
+    limit: { type: "string" },
+    remaining: { type: "boolean", default: false },
+    reserve: { type: "string" },
+  },
 });
 const command = positionals[0] ?? "run";
 
@@ -42,8 +50,61 @@ const pool = createPool(config.databaseUrl, logger);
 const target = { model: config.llm.embeddingModel, dimensions: config.llm.embeddingDimensions };
 const exportPath = join(config.embed.exportDir, exportFileName(target));
 
+/** A whole number from the command line, or undefined if the option was not given. */
+function wholeOption(name: "limit" | "reserve", min: number): number | undefined {
+  const text = values[name];
+  if (text === undefined) return undefined;
+  const value = Number(text);
+  if (!Number.isInteger(value) || value < min) {
+    throw new Error(`--${name} must be a whole number of at least ${min}`);
+  }
+  return value;
+}
+
+/** What this database knows about today's use of the embedding quota. */
+async function allowance(config: Config, reserve: number): Promise<Allowance> {
+  const now = new Date();
+  const usage = await quotaUsage(pool, target.model, lastQuotaReset(config.embed.quotaTimeZone, now));
+  return allowanceOf(
+    usage,
+    { dailyQuota: config.embed.dailyQuota, reserve, timeZone: config.embed.quotaTimeZone },
+    now,
+  );
+}
+
+function describeAllowance(config: Config, quota: Allowance): string {
+  const hours = Math.floor(quota.minutesToReset / 60);
+  const refill = hours > 0 ? `${hours} h ${quota.minutesToReset % 60} min` : `${quota.minutesToReset} min`;
+  return (
+    `${quota.used} of ${config.embed.dailyQuota} used since the last refill ` +
+    `(${quota.movies} movies, ${quota.requests} requests). Refill in ${refill}.`
+  );
+}
+
 async function run(config: Config) {
   await assertDimensionsMatch(pool, target.dimensions);
+  const reserve = wholeOption("reserve", 0) ?? 0;
+  let limit = wholeOption("limit", 1);
+  // Never run past the refill: what comes after it belongs to tomorrow's requests.
+  let stopAt: Date | undefined;
+  if (values.remaining) {
+    const quota = await allowance(config, reserve);
+    console.log(`Quota: ${describeAllowance(config, quota)}`);
+    console.log(
+      `Embedding up to ${quota.left} movies${reserve > 0 ? `, keeping ${reserve} for requests` : ""}.`,
+    );
+    if (quota.minutesToReset > 60) {
+      console.log(
+        "Note: the refill is more than an hour away. Until then, new search requests " +
+          "will find no quota and fall back to keywords. This is best run shortly before the refill.",
+      );
+    }
+    if (quota.left === 0) return;
+    limit = Math.min(limit ?? quota.left, quota.left);
+    stopAt = quota.resetsAt;
+  } else if (values.reserve !== undefined) {
+    throw new Error("--reserve only makes sense together with --remaining");
+  }
   const llm = createGeminiProvider(config, pool, logger);
   const connection = createQueueConnection(config.redisUrl);
   const queue = createEmbedQueue(connection);
@@ -64,13 +125,7 @@ async function run(config: Config) {
       .sort((a, b) => b.voteCount - a.voteCount || a.movieId - b.movieId)
       .map((movie) => movie.movieId);
     console.log(`${movies.length - pending.length} of ${movies.length} movies are up to date.`);
-    const limit = values.limit ? Number(values.limit) : undefined;
-    if (limit !== undefined) {
-      if (!Number.isInteger(limit) || limit < 1) {
-        throw new Error("--limit must be a positive whole number");
-      }
-      pending = pending.slice(0, limit);
-    }
+    if (limit !== undefined) pending = pending.slice(0, limit);
     if (pending.length === 0) {
       console.log("Nothing to embed.");
       return;
@@ -110,7 +165,16 @@ async function run(config: Config) {
       console.log("\nStopping after the current batch. Run `pnpm embed` again to continue.");
     });
 
-    const totals = await runUntilDone(queue, worker, { shouldStop: () => interrupted });
+    let reachedRefill = false;
+    const totals = await runUntilDone(queue, worker, {
+      shouldStop: () => {
+        reachedRefill = stopAt !== undefined && Date.now() >= stopAt.getTime();
+        return interrupted || reachedRefill;
+      },
+    });
+    if (reachedRefill) {
+      console.log("Stopped at the refill time, so that the new day's quota stays for requests.");
+    }
     const coverage = await embeddingCoverage(pool, target.model);
     const left = await remainingJobs(queue);
     console.log(
@@ -147,6 +211,8 @@ async function status(config: Config) {
        FROM llm_calls WHERE stage = 'embed_batch' GROUP BY status ORDER BY status`,
     );
     console.log(`Model     ${target.model}, ${target.dimensions} dimensions`);
+    const quota = await allowance(config, 0);
+    console.log(`Quota     ${describeAllowance(config, quota)} ${quota.left} left.`);
     console.log(`Coverage  ${coverage.embedded} of ${coverage.movies} movies embedded`);
     console.log(
       `Queue     ${counts.waiting} waiting, ${counts.active} active, ${counts.delayed} delayed, ${counts.failed} failed`,
