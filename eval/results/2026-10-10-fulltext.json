@@ -1,7 +1,7 @@
 {
-  "runId": "eval-fulltext-mv2ox6ir",
+  "runId": "eval-fulltext-mv2pvd2b",
   "mode": "fulltext",
-  "startedAt": "2026-10-10T17:50:53.763Z",
+  "startedAt": "2026-10-10T18:17:28.547Z",
   "skippedSteps": [
     "parse",
     "embed",
@@ -54,8 +54,8 @@
     "fallbacks": 0,
     "emptyAnswers": 1,
     "latencyMs": {
-      "p50": 19,
-      "p95": 64
+      "p50": 18,
+      "p95": 61
     },
     "tokensPerQuery": 0,
     "llmCalls": 0
@@ -152,7 +152,7 @@
         },
         {
           "name": "search",
-          "ms": 102,
+          "ms": 100,
           "status": "ok"
         },
         {
@@ -163,7 +163,7 @@
       ],
       "fallbacks": 0,
       "relaxed": [],
-      "ms": 102,
+      "ms": 101,
       "tokens": {
         "calls": 0,
         "input": 0,
@@ -251,7 +251,7 @@
         },
         {
           "name": "search",
-          "ms": 12,
+          "ms": 13,
           "status": "ok"
         },
         {
@@ -451,7 +451,7 @@
         },
         {
           "name": "search",
-          "ms": 30,
+          "ms": 31,
           "status": "ok"
         },
         {
@@ -462,7 +462,7 @@
       ],
       "fallbacks": 0,
       "relaxed": [],
-      "ms": 30,
+      "ms": 31,
       "tokens": {
         "calls": 0,
         "input": 0,
@@ -571,7 +571,7 @@
         },
         {
           "name": "search",
-          "ms": 19,
+          "ms": 18,
           "status": "ok"
         },
         {
@@ -582,7 +582,7 @@
       ],
       "fallbacks": 0,
       "relaxed": [],
-      "ms": 19,
+      "ms": 18,
       "tokens": {
         "calls": 0,
         "input": 0,
@@ -683,7 +683,7 @@
         },
         {
           "name": "search",
-          "ms": 64,
+          "ms": 61,
           "status": "ok"
         },
         {
@@ -694,7 +694,7 @@
       ],
       "fallbacks": 0,
       "relaxed": [],
-      "ms": 64,
+      "ms": 61,
       "tokens": {
         "calls": 0,
         "input": 0,
@@ -780,7 +780,7 @@
         },
         {
           "name": "search",
-          "ms": 25,
+          "ms": 23,
           "status": "ok"
         },
         {
@@ -791,7 +791,7 @@
       ],
       "fallbacks": 0,
       "relaxed": [],
-      "ms": 25,
+      "ms": 23,
       "tokens": {
         "calls": 0,
         "input": 0,
@@ -820,7 +820,7 @@
         },
         {
           "name": "search",
-          "ms": 2,
+          "ms": 1,
           "status": "ok"
         },
         {
@@ -1147,7 +1147,7 @@
         },
         {
           "name": "search",
-          "ms": 9,
+          "ms": 8,
           "status": "ok"
         },
         {
@@ -1158,7 +1158,7 @@
       ],
       "fallbacks": 0,
       "relaxed": [],
-      "ms": 9,
+      "ms": 8,
       "tokens": {
         "calls": 0,
         "input": 0,
@@ -1261,7 +1261,7 @@
         },
         {
           "name": "search",
-          "ms": 18,
+          "ms": 17,
           "status": "ok"
         },
         {
@@ -1272,7 +1272,7 @@
       ],
       "fallbacks": 0,
       "relaxed": [],
-      "ms": 18,
+      "ms": 17,
       "tokens": {
         "calls": 0,
         "input": 0,
@@ -1370,7 +1370,7 @@
         },
         {
           "name": "search",
-          "ms": 29,
+          "ms": 27,
           "status": "ok"
         },
         {
@@ -1381,7 +1381,7 @@
       ],
       "fallbacks": 0,
       "relaxed": [],
-      "ms": 29,
+      "ms": 27,
       "tokens": {
         "calls": 0,
         "input": 0,
@@ -1479,7 +1479,7 @@
         },
         {
           "name": "search",
-          "ms": 10,
+          "ms": 9,
           "status": "ok"
         },
         {
@@ -1490,7 +1490,7 @@
       ],
       "fallbacks": 0,
       "relaxed": [],
-      "ms": 10,
+      "ms": 9,
       "tokens": {
         "calls": 0,
         "input": 0,
@@ -1576,7 +1576,7 @@
         },
         {
           "name": "search",
-          "ms": 20,
+          "ms": 19,
           "status": "ok"
         },
         {
@@ -1587,7 +1587,7 @@
       ],
       "fallbacks": 0,
       "relaxed": [],
-      "ms": 20,
+      "ms": 19,
       "tokens": {
         "calls": 0,
         "input": 0,
@@ -1681,7 +1681,7 @@
         },
         {
           "name": "search",
-          "ms": 24,
+          "ms": 22,
           "status": "ok"
         },
         {
@@ -1692,7 +1692,7 @@
       ],
       "fallbacks": 0,
       "relaxed": [],
-      "ms": 24,
+      "ms": 22,
       "tokens": {
         "calls": 0,
         "input": 0,
@@ -1897,7 +1897,7 @@
         },
         {
           "name": "search",
-          "ms": 29,
+          "ms": 27,
           "status": "ok"
         },
         {
@@ -1908,7 +1908,7 @@
       ],
       "fallbacks": 0,
       "relaxed": [],
-      "ms": 29,
+      "ms": 27,
       "tokens": {
         "calls": 0,
         "input": 0,
@@ -1996,7 +1996,7 @@
         },
         {
           "name": "search",
-          "ms": 48,
+          "ms": 46,
           "status": "ok"
         },
         {
@@ -2007,7 +2007,7 @@
       ],
       "fallbacks": 0,
       "relaxed": [],
-      "ms": 48,
+      "ms": 46,
       "tokens": {
         "calls": 0,
         "input": 0,
@@ -2103,7 +2103,7 @@
         },
         {
           "name": "search",
-          "ms": 40,
+          "ms": 37,
           "status": "ok"
         },
         {
@@ -2114,7 +2114,7 @@
       ],
       "fallbacks": 0,
       "relaxed": [],
-      "ms": 40,
+      "ms": 37,
       "tokens": {
         "calls": 0,
         "input": 0,
@@ -2202,7 +2202,7 @@
         },
         {
           "name": "search",
-          "ms": 60,
+          "ms": 56,
           "status": "ok"
         },
         {
@@ -2213,7 +2213,7 @@
       ],
       "fallbacks": 0,
       "relaxed": [],
-      "ms": 60,
+      "ms": 56,
       "tokens": {
         "calls": 0,
         "input": 0,
@@ -2309,7 +2309,7 @@
         },
         {
           "name": "search",
-          "ms": 12,
+          "ms": 11,
           "status": "ok"
         },
         {
@@ -2320,7 +2320,7 @@
       ],
       "fallbacks": 0,
       "relaxed": [],
-      "ms": 12,
+      "ms": 11,
       "tokens": {
         "calls": 0,
         "input": 0,
@@ -2412,7 +2412,7 @@
         },
         {
           "name": "search",
-          "ms": 63,
+          "ms": 59,
           "status": "ok"
         },
         {
@@ -2423,7 +2423,7 @@
       ],
       "fallbacks": 0,
       "relaxed": [],
-      "ms": 63,
+      "ms": 59,
       "tokens": {
         "calls": 0,
         "input": 0,

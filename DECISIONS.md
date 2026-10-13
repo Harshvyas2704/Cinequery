@@ -282,6 +282,21 @@ flowchart TD
   - The spoiler check only finds listed phrases. It cannot recognise a spoiler worded differently.
   - Tag match rate counts a movie without tags as a miss, and 58% of the catalog has none.
 
+### D-051 Movies are embedded from what the day's quota has left
+- **Status:** Accepted, 2026-10-11
+- **Decision:** The prototype ships with the 980 embedded movies; the rest are added over the following weeks on the free tier (the user's decision, extending D-041). The daily routine is one command shortly before the provider's quota refills: `pnpm embed --remaining` embeds as many movies as the day's quota has left, so search requests are served first all day and movies get the remainder. `--reserve N` keeps N back. The run never continues past the refill time.
+  - The count comes from `llm_calls`: the new column `items` (migrations 0006 and 0007) holds how many texts each embedding call embedded, because the quota counts texts, not calls.
+  - The quota (`EMBED_DAILY_QUOTA`, 1,000) and the time zone of the provider's day (`EMBED_QUOTA_TIMEZONE`, Pacific time) are config.
+- **Alternatives:** A fixed split (700 movies in the morning, the rest at night), the user's first idea. A second free API key from another account.
+- **Why:**
+  - The provider's day runs from midnight Pacific time, which is 12:30 pm in India in summer and 1:30 pm in winter. A run that empties the quota in the evening leaves nothing for requests until the next afternoon; a run 15 minutes before the refill leaves nothing for 15 minutes.
+  - Using what is left needs no guess about how many requests the day will bring, and wastes nothing.
+  - A second account to get around the limit would break the provider's terms and risk both accounts; the user ruled it out.
+- **Consequences:**
+  - The count is an estimate. On the first day it said 996 of 1,000 while the provider already refused requests, so it can be a few too low. This is harmless: a refused batch stays queued and the run stops.
+  - Only calls logged in the database the command runs against are counted. After deployment, `pnpm embed` should run against the production database, where the users' requests are logged.
+  - The refill time is taken from the provider's documentation and has not yet been observed.
+
 ---
 
 ## Data

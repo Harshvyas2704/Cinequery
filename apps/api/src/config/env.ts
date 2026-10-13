@@ -178,10 +178,29 @@ const envSchema = z.object({
 
   // The embeddings job (`pnpm embed`).
   EMBED_BATCH_SIZE: wholeNumber(1, 100).default(20),
-  EMBED_REQUESTS_PER_MINUTE: wholeNumber(1, 6000).default(7),
+  // Batches a minute. The free tier allows 100 embedded texts a minute, and a
+  // batch is EMBED_BATCH_SIZE texts: 4 x 20 = 80, which leaves room for requests.
+  EMBED_REQUESTS_PER_MINUTE: wholeNumber(1, 6000).default(4),
   EMBED_TIMEOUT_MS: wholeNumber(1000, 600_000).default(60_000),
   // How often a failed batch is tried again before it is listed as failed.
   EMBED_JOB_ATTEMPTS: wholeNumber(1, 20).default(3),
+  // The provider's limit on embedded texts per day, and the time zone whose
+  // midnight starts its day. `pnpm embed --remaining` uses what is left (D-051).
+  EMBED_DAILY_QUOTA: wholeNumber(1, 100_000_000).default(1000),
+  EMBED_QUOTA_TIMEZONE: z
+    .string()
+    .refine(
+      (zone) => {
+        try {
+          new Intl.DateTimeFormat("en-US", { timeZone: zone });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { error: message("a time zone name such as America/Los_Angeles") },
+    )
+    .default("America/Los_Angeles"),
   // Where `pnpm embed:export` writes and `pnpm embed:import` reads.
   EXPORT_DIR: z.string().default(DEFAULT_EXPORT_DIR),
 });
@@ -243,6 +262,8 @@ export type Config = {
     timeoutMs: number;
     jobAttempts: number;
     exportDir: string;
+    dailyQuota: number;
+    quotaTimeZone: string;
   };
   http: { trustProxyHops: number; bodyLimitBytes: number; shutdownTimeoutMs: number };
   rateLimit: { windowSeconds: number; recommendMax: number; apiMax: number };
@@ -356,6 +377,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       timeoutMs: parsed.EMBED_TIMEOUT_MS,
       jobAttempts: parsed.EMBED_JOB_ATTEMPTS,
       exportDir: parsed.EXPORT_DIR,
+      dailyQuota: parsed.EMBED_DAILY_QUOTA,
+      quotaTimeZone: parsed.EMBED_QUOTA_TIMEZONE,
     },
     http: {
       trustProxyHops: parsed.TRUST_PROXY_HOPS,

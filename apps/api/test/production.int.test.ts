@@ -14,6 +14,7 @@ import { createQueryEmbeddingCache } from "../src/cache/queryEmbeddings.js";
 import { createRedis } from "../src/cache/redis.js";
 import { runMigrations } from "../src/db/migrator.js";
 import { createPool } from "../src/db/pool.js";
+import { quotaUsage } from "../src/embeddings/quota.js";
 import { createQueueConnection } from "../src/jobs/embedQueue.js";
 import {
   createMaintenanceQueue,
@@ -557,6 +558,51 @@ describe("retention", () => {
       // A changed schedule replaces the old one.
       await scheduleRetention(queue, "0 4 * * *");
       expect((await queue.getJobSchedulers()).map((scheduler) => scheduler.pattern)).toEqual(["0 4 * * *"]);
+    });
+  });
+});
+
+describe("embedding quota usage", () => {
+  it("counts embedded texts, not calls, since the last refill", async () => {
+    const backend = createFakeBackend({ embeddingDimensions: 8 });
+    const llm = createLlmProvider(backend, {
+      retry: { maxRetries: 0, baseDelayMs: 1, maxDelayMs: 1 },
+      recordCall: llmCallRecorder(pool, silentLogger),
+    });
+    const embed = (texts: string[], stage: string) =>
+      llm.embed({ texts, kind: "document", stage, timeoutMs: 1000 });
+
+    await embed(["a", "b", "c"], "embed_batch"); // one call, three texts
+    await embed(["d", "e"], "embed_batch");
+    await embed(["a request"], "embed_query");
+    await embed(["another request"], "embed_query");
+    // A refused call used no quota.
+    backend.failNext({ type: "status", status: 429 });
+    await embed(["f"], "embed_batch").catch(() => {});
+    // Calls that are not embeddings, and calls of another model, do not count.
+    backend.respondWith({});
+    await llm.generateJson({
+      stage: "parse",
+      promptVersion: "v",
+      system: "",
+      prompt: "",
+      schema: {},
+      maxOutputTokens: 10,
+      timeoutMs: 1000,
+    });
+    // Yesterday's use is not today's. Old rows have no item count.
+    await pool.query(
+      `INSERT INTO llm_calls (stage, model, latency_ms, status, items, created_at) VALUES
+         ('embed_batch', 'fake-embedding', 1, 'ok', 20, now() - interval '2 days'),
+         ('embed_query', 'another-model', 1, 'ok', 1, now()),
+         ('embed_query', 'fake-embedding', 1, 'ok', NULL, now())`,
+    );
+
+    const since = new Date(Date.now() - 3_600_000);
+    expect(await quotaUsage(pool, "fake-embedding", since)).toEqual({ movies: 5, requests: 3 });
+    expect(await quotaUsage(pool, "fake-embedding", new Date(Date.now() + 1000))).toEqual({
+      movies: 0,
+      requests: 0,
     });
   });
 });

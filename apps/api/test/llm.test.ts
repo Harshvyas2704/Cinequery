@@ -235,6 +235,7 @@ describe("call log", () => {
         inputTokens: 100,
         outputTokens: 20,
         latencyMs: expect.any(Number),
+        items: null,
         status: "ok",
       },
     ]);
@@ -248,6 +249,8 @@ describe("call log", () => {
       model: "fake-embedding",
       promptVersion: null,
       requestId: null,
+      // The two texts of the call: the daily quota counts texts, not calls.
+      items: 2,
       status: "ok",
     });
   });

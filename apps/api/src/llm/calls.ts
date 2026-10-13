@@ -11,8 +11,8 @@ export function llmCallRecorder(pool: Pick<pg.Pool, "query">, logger: Logger) {
     try {
       await pool.query(
         `INSERT INTO llm_calls
-           (request_id, stage, model, prompt_version, input_tokens, output_tokens, latency_ms, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+           (request_id, stage, model, prompt_version, input_tokens, output_tokens, latency_ms, status, items)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           call.requestId,
           call.stage,
@@ -22,6 +22,7 @@ export function llmCallRecorder(pool: Pick<pg.Pool, "query">, logger: Logger) {
           call.outputTokens,
           call.latencyMs,
           call.status,
+          call.items,
         ],
       );
     } catch (error) {

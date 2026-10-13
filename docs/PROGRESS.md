@@ -779,3 +779,44 @@ numbers were those of the keyword fallback.
 - Requests of the evaluation are in `llm_calls` with ids starting `eval-`, and
   count toward the API's token budget and the stats of the day.
 
+## Outside the phases: embedding within the daily quota (2026-10-11)
+
+Asked for by the user while Phase 9 waits for the quota.
+
+### Built
+
+- `pnpm embed --remaining [--reserve N]`: embeds as many movies as the
+  provider's daily quota has left (`apps/api/src/embeddings/quota.ts`), and
+  stops at the refill time.
+- `pnpm embed:status` shows the quota: used (movies and requests), left, and
+  the time to the refill.
+- `llm_calls.items`: how many texts an embedding call embedded (migrations
+  `0006_llm_call_items.sql`, `0007_backfill_llm_call_items.sql`).
+- Config: `EMBED_DAILY_QUOTA`, `EMBED_QUOTA_TIMEZONE`.
+
+### The daily routine (D-051)
+
+```bash
+pnpm embed:status      # any time: what is used and when the refill is
+pnpm embed --remaining # about 20 minutes before the refill (12:30 pm IST in summer)
+```
+
+### Checked
+
+| Check                                       | Result                                       |
+| ------------------------------------------- | -------------------------------------------- |
+| `pnpm lint`, `pnpm typecheck`, `pnpm build` | Pass                                         |
+| `pnpm test`                                 | 304 tests pass (17 shared, 260 API, 27 web)  |
+| Quota day: summer, winter, clock-change days | Pass                                        |
+| Counts texts, not calls; only today; only ok | Pass                                        |
+| `pnpm embed:status` on the real database    | "996 of 1000 used (980 movies, 16 requests)" |
+
+### Things to know
+
+- **The count can be a few too low.** It said 4 were left while the provider
+  was already refusing. One batch of 4 movies was sent in that check and
+  refused; nothing was embedded.
+- **The refill time (midnight Pacific) is not yet observed.** A check at
+  10:19 am IST on 2026-10-11 was still refused.
+- Phase 9 is still waiting for the same refill.
+

@@ -72,3 +72,16 @@ pnpm eval --report         # the comparison table from the saved runs
 So far only the baseline is measured (constraints 46%, hit rate 30%); the
 other modes are waiting for the free tier's daily embedding quota.
 
+## Adding movies on the free tier
+
+The free tier allows 1,000 embeddings a day, shared between movies and search
+requests. Google's day starts at midnight Pacific time (12:30 pm in India in
+summer, 1:30 pm in winter). To add movies without taking quota away from
+requests, run this once a day, about 20 minutes before that time (900 movies
+take about 12 minutes):
+
+```bash
+pnpm embed --remaining   # embeds what the day has left, then stops
+pnpm embed:status        # shows what is used and when the refill is
+```
+
